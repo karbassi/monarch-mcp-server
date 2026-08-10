@@ -3,10 +3,10 @@
 import json
 
 from monarch_mcp_server.tools.accounts import (
-    get_accounts,
-    get_account_holdings,
-    refresh_accounts,
     get_account_balance_history,
+    get_account_holdings,
+    get_accounts,
+    refresh_accounts,
     upload_account_balance_history,
 )
 
@@ -219,3 +219,33 @@ class TestUploadAccountBalanceHistory:
         mock_monarch_client.get_account_history.side_effect = Exception("Timeout")
         result = await upload_account_balance_history("12345", '{"2026-04-21": 0}')
         assert "upload_account_balance_history" in result
+
+
+class TestAccountSubtypeAndNetWorthFields:
+    """The AccountFields fragment already fetches these; get_accounts dropped them.
+
+    Without them a caller cannot tell a Roth IRA from a taxable brokerage, or see
+    which accounts Monarch excludes from net worth, without dropping to raw
+    GraphQL. Confirmed against the live API: subtype is populated on every
+    account, and 7 of 48 have include_in_net_worth False.
+    """
+
+    async def test_subtype_mask_and_flags_are_passed_through(self):
+        result = json.loads(await get_accounts())
+        acc = result[0]
+        assert acc["subtype"] == "roth_ira"
+        assert acc["subtype_display"] == "Roth IRA"
+        assert acc["mask"] == "4321"
+        assert acc["hide_from_list"] is True
+        assert acc["include_in_net_worth"] is False
+
+    async def test_absent_fields_degrade_without_raising(self):
+        """An account payload lacking them must still serialise -- these come from
+        an upstream fragment that may not always populate every field."""
+        result = json.loads(await get_accounts())
+        acc = result[1]
+        assert acc["subtype"] is None
+        assert acc["subtype_display"] is None
+        assert acc["mask"] is None
+        assert acc["hide_from_list"] is False
+        assert acc["include_in_net_worth"] is None

@@ -604,7 +604,7 @@ requires-dist = [
     { name = "isort", marker = "extra == 'dev'", specifier = ">=5.12.0" },
     { name = "keyring", specifier = ">=24.0.0" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.10.0,<2.0.0" },
-    { name = "monarchmoneycommunity", specifier = ">=1.4.0" },
+    { name = "monarchmoneycommunity", specifier = ">=1.5.2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "packaging", marker = "extra == 'dev'", specifier = ">=23.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.0.0" },
@@ -617,16 +617,16 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "monarchmoneycommunity"
-version = "1.4.0"
+version = "1.5.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "gql" },
     { name = "oathtool" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/eb/06/4de2984bf2a8c1883d8c4469883e5a6026aa8bcb98ac55cc7cf2e18bed31/monarchmoneycommunity-1.4.0.tar.gz", hash = "sha256:70f78fcb1deeb6e32e63d4dd15c98ff8096bb24652b4fd7c17f752d072273b13", size = 32227, upload-time = "2026-06-04T03:52:37.795Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ee/ba/d07d7ced03026a01b5f1f729a116c929ea9a867faf4a79ef8a245858ddfd/monarchmoneycommunity-1.5.2.tar.gz", hash = "sha256:bdd8e03e619c547dccb282f64865ece6202992cacd290013dd1ff061b0d6bb30", size = 36934, upload-time = "2026-08-02T15:40:16.412Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1e/7e/2c8f627b35f100f1c7e21269484e4d131839bf6934229178cbbeb2e92528/monarchmoneycommunity-1.4.0-py3-none-any.whl", hash = "sha256:9c89904904893400dfe3c2d1df9a6ad6579f09c74bf7b1f84f99a9a96d7c78f4", size = 26395, upload-time = "2026-06-04T03:52:36.6Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/82/b872d537af119ca8c3585d2e8f335f07754b86749cf7a69a1466390276a1/monarchmoneycommunity-1.5.2-py3-none-any.whl", hash = "sha256:1cce7e158546b69726a783371f71417d73802bd9104673312f251831f97b2301", size = 30783, upload-time = "2026-08-02T15:40:15.281Z" },
 ]
 
 [[package]]

@@ -34,6 +34,10 @@ def mock_monarch_client():
                 "institution": {"name": "Test Bank"},
                 "deactivatedAt": None,
                 "isHidden": False,
+                "subtype": {"name": "roth_ira", "display": "Roth IRA"},
+                "mask": "4321",
+                "hideFromList": True,
+                "includeInNetWorth": False,
             },
             {
                 "id": "acc-2",
