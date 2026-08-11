@@ -76,12 +76,20 @@ class SecureMonarchSession:
         # Create the file already locked to owner-only (0600) instead of
         # write_text()-then-chmod, which leaves a window where the token is
         # world-readable under a default umask.
+        # O_NOFOLLOW refuses a symlink planted at the token path outright, rather
+        # than following it and writing the token to an attacker-chosen target.
+        # It is absent on some platforms (notably Windows), hence the getattr.
         fd = os.open(
             _TOKEN_FILE,
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
             stat.S_IRUSR | stat.S_IWUSR,
         )
         try:
+            # O_NOFOLLOW only rejects symlinks, so confirm we really hold a plain
+            # file before writing a credential into it — not a device or socket
+            # someone left at the path.
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(f"{_TOKEN_FILE} is not a regular file; refusing to write")
             # O_CREAT honors the mode only when creating, so a pre-existing file
             # keeps its old (possibly 0644) mode. Narrow it through the fd before
             # any token bytes land — fchmod targets the open file, so unlike a

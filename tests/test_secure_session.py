@@ -429,3 +429,76 @@ class TestFileFallbackPermissions:
             f"token written while file was {[oct(m) for m in modes_at_write]}"
         )
         assert _stat.S_IMODE(token_file.stat().st_mode) == 0o600
+
+    def test_symlink_at_token_path_is_refused(self, tmp_path, monkeypatch):
+        """A symlink planted at the token path must not redirect the write. The
+        open must fail rather than follow it to an attacker-chosen target."""
+        store = tmp_path / "store"
+        store.mkdir()
+        token_file = store / "token"
+        victim = tmp_path / "victim"
+        victim.write_text("do-not-clobber")
+        token_file.symlink_to(victim)
+
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", token_file)
+
+        session = ss_module.SecureMonarchSession()
+        with pytest.raises(OSError):
+            session._save_token_file("super-secret-token")
+
+        assert victim.read_text() == "do-not-clobber"
+
+    def test_non_regular_file_at_token_path_is_refused(self, tmp_path, monkeypatch):
+        """Even without a symlink, the fd must be verified to be a regular file
+        before the token is written to it."""
+        store = tmp_path / "store"
+        store.mkdir()
+        token_file = store / "token"
+
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", token_file)
+
+        # Hand back an fd to a character device; nothing should be written to it.
+        real_open = ss_module.os.open
+
+        def _devnull_open(path, flags, mode=0o777):
+            if os.fspath(path) == os.fspath(token_file):
+                return real_open(os.devnull, os.O_WRONLY)
+            return real_open(path, flags, mode)
+
+        monkeypatch.setattr(ss_module.os, "open", _devnull_open)
+        # fchmod on /dev/null raises EPERM for a non-root user, which would make
+        # this pass without exercising the fstat check at all. Neutralise it so
+        # the only thing that can reject the fd is the regular-file check.
+        monkeypatch.setattr(ss_module.os, "fchmod", lambda *_a, **_k: None)
+
+        written = []
+        real_fdopen = ss_module.os.fdopen
+
+        class _RecordingFile:
+            def __init__(self, wrapped):
+                self._wrapped = wrapped
+
+            def write(self, data):
+                written.append(data)
+                return self._wrapped.write(data)
+
+            def __enter__(self):
+                self._wrapped.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self._wrapped.__exit__(*exc)
+
+        monkeypatch.setattr(
+            ss_module.os,
+            "fdopen",
+            lambda fd, *a, **k: _RecordingFile(real_fdopen(fd, *a, **k)),
+        )
+
+        session = ss_module.SecureMonarchSession()
+        with pytest.raises(OSError):
+            session._save_token_file("super-secret-token")
+
+        assert not written, "token was written to a non-regular file"
