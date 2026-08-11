@@ -1,5 +1,6 @@
 """Tests for keyring backend detection and secure session storage."""
 
+import os
 import sys
 import types
 from unittest.mock import MagicMock
@@ -353,11 +354,17 @@ class TestFileFallbackPermissions:
 
         monkeypatch.setattr(ss_module.Path, "write_text", _boom)
 
+        token_file = tmp_path / "store" / "token"
+
+        # ss_module.os is the os module itself, so this patch is process-wide for
+        # the duration of the test — record only opens of the token path, or an
+        # unrelated os.open (e.g. a logging handler) would pollute the assertion.
         create_modes = []
         real_open = ss_module.os.open
 
         def _recording_open(path, flags, mode=0o777):
-            create_modes.append(mode)
+            if os.fspath(path) == os.fspath(token_file):
+                create_modes.append(mode)
             return real_open(path, flags, mode)
 
         monkeypatch.setattr(ss_module.os, "open", _recording_open)
@@ -365,7 +372,6 @@ class TestFileFallbackPermissions:
         session = ss_module.SecureMonarchSession()
         session._save_token_file("super-secret-token")
 
-        token_file = tmp_path / "store" / "token"
         assert token_file.read_text() == "super-secret-token"
         assert create_modes and all(m == 0o600 for m in create_modes)
         assert _stat.S_IMODE(token_file.stat().st_mode) == 0o600
