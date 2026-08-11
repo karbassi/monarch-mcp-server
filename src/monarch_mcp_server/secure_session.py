@@ -76,14 +76,18 @@ class SecureMonarchSession:
         # Create the file already locked to owner-only (0600) instead of
         # write_text()-then-chmod, which leaves a window where the token is
         # world-readable under a default umask.
+        mode = stat.S_IRUSR | stat.S_IWUSR  # 600
         # O_NOFOLLOW refuses a symlink planted at the token path outright, rather
         # than following it and writing the token to an attacker-chosen target.
-        # It is absent on some platforms (notably Windows), hence the getattr.
-        fd = os.open(
-            _TOKEN_FILE,
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
-            stat.S_IRUSR | stat.S_IWUSR,
-        )
+        # It is Unix-only (absent on Windows), hence the getattr.
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if not nofollow and _TOKEN_FILE.is_symlink():
+            # Best-effort, and racy by construction: without O_NOFOLLOW there is
+            # no way to make "refuse a symlink" atomic with the open, so the link
+            # could be planted in between. Still worth doing on a platform that
+            # offers no alternative.
+            raise OSError(f"{_TOKEN_FILE} is a symlink; refusing to write")
+        fd = os.open(_TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | nofollow, mode)
         try:
             # O_NOFOLLOW only rejects symlinks, so confirm we really hold a plain
             # file before writing a credential into it — not a device or socket
@@ -91,10 +95,18 @@ class SecureMonarchSession:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise OSError(f"{_TOKEN_FILE} is not a regular file; refusing to write")
             # O_CREAT honors the mode only when creating, so a pre-existing file
-            # keeps its old (possibly 0644) mode. Narrow it through the fd before
-            # any token bytes land — fchmod targets the open file, so unlike a
-            # path-based chmod it cannot be redirected by a swapped symlink.
-            os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)  # 600
+            # keeps its old (possibly 0644) mode. Narrow it before any token bytes
+            # land. Prefer fchmod: it targets the open file, so unlike a path-based
+            # chmod it cannot be redirected by a symlink swapped in after the open.
+            fchmod = getattr(os, "fchmod", None)
+            if fchmod is not None:
+                fchmod(fd, mode)
+            else:
+                # Unix-only, like O_NOFOLLOW. Falling back to the path is weaker
+                # for the reason above, but leaving a pre-existing file at its old
+                # mode would be worse, and crashing the whole fallback path worse
+                # still.
+                os.chmod(_TOKEN_FILE, mode)
             f = os.fdopen(fd, "w")
         except BaseException:
             os.close(fd)

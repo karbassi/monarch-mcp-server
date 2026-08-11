@@ -502,3 +502,44 @@ class TestFileFallbackPermissions:
             session._save_token_file("super-secret-token")
 
         assert not written, "token was written to a non-regular file"
+
+    def test_symlink_refused_without_o_nofollow(self, tmp_path, monkeypatch):
+        """O_NOFOLLOW is Unix-only. On a platform without it there must still be
+        a best-effort symlink check rather than silently following the link."""
+        store = tmp_path / "store"
+        store.mkdir()
+        token_file = store / "token"
+        victim = tmp_path / "victim"
+        victim.write_text("do-not-clobber")
+        token_file.symlink_to(victim)
+
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", token_file)
+        monkeypatch.delattr(ss_module.os, "O_NOFOLLOW", raising=False)
+
+        session = ss_module.SecureMonarchSession()
+        with pytest.raises(OSError):
+            session._save_token_file("super-secret-token")
+
+        assert victim.read_text() == "do-not-clobber"
+
+    def test_save_works_without_fchmod(self, tmp_path, monkeypatch):
+        """os.fchmod is Unix-only; its absence must not break the fallback path.
+        The file must still end up at 0600."""
+        import stat as _stat
+
+        store = tmp_path / "store"
+        store.mkdir()
+        token_file = store / "token"
+        token_file.write_text("stale-token")
+        token_file.chmod(0o644)
+
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", token_file)
+        monkeypatch.delattr(ss_module.os, "fchmod", raising=False)
+
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("super-secret-token")
+
+        assert token_file.read_text() == "super-secret-token"
+        assert _stat.S_IMODE(token_file.stat().st_mode) == 0o600
