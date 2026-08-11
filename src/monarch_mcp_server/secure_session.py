@@ -81,11 +81,19 @@ class SecureMonarchSession:
             os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
             stat.S_IRUSR | stat.S_IWUSR,
         )
-        with os.fdopen(fd, "w") as f:
+        try:
+            # O_CREAT honors the mode only when creating, so a pre-existing file
+            # keeps its old (possibly 0644) mode. Narrow it through the fd before
+            # any token bytes land — fchmod targets the open file, so unlike a
+            # path-based chmod it cannot be redirected by a swapped symlink.
+            os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)  # 600
+            f = os.fdopen(fd, "w")
+        except BaseException:
+            os.close(fd)
+            raise
+        # fdopen took ownership of fd; closing f closes it exactly once.
+        with f:
             f.write(token)
-        # O_CREAT honors the mode only when creating; enforce it for an
-        # existing file too.
-        _TOKEN_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
         logger.info(f"✅ Token saved to {_TOKEN_FILE}")
 
     def _load_token_file(self) -> Optional[str]:

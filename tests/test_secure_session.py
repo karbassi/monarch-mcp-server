@@ -375,3 +375,57 @@ class TestFileFallbackPermissions:
         assert token_file.read_text() == "super-secret-token"
         assert create_modes and all(m == 0o600 for m in create_modes)
         assert _stat.S_IMODE(token_file.stat().st_mode) == 0o600
+
+    def test_preexisting_file_locked_down_before_token_is_written(
+        self, tmp_path, monkeypatch
+    ):
+        """O_CREAT's mode applies only when creating. A pre-existing token file
+        with broader permissions must be narrowed to 0600 *before* the new token
+        is written, not chmod'd afterward."""
+        import stat as _stat
+
+        store = tmp_path / "store"
+        store.mkdir()
+        token_file = store / "token"
+        token_file.write_text("stale-token")
+        token_file.chmod(0o644)
+
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", token_file)
+
+        modes_at_write = []
+        real_fdopen = ss_module.os.fdopen
+
+        class _ModeRecordingFile:
+            """Records the file's on-disk mode at the moment content lands."""
+
+            def __init__(self, wrapped):
+                self._wrapped = wrapped
+
+            def write(self, data):
+                modes_at_write.append(_stat.S_IMODE(token_file.stat().st_mode))
+                return self._wrapped.write(data)
+
+            def __enter__(self):
+                self._wrapped.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self._wrapped.__exit__(*exc)
+
+        monkeypatch.setattr(
+            ss_module.os,
+            "fdopen",
+            lambda fd, *a, **k: _ModeRecordingFile(real_fdopen(fd, *a, **k)),
+        )
+
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("super-secret-token")
+
+        assert token_file.read_text() == "super-secret-token"
+        # Guard: an empty list would pass the all() below vacuously.
+        assert modes_at_write, "token was never written"
+        assert all(m == 0o600 for m in modes_at_write), (
+            f"token written while file was {[oct(m) for m in modes_at_write]}"
+        )
+        assert _stat.S_IMODE(token_file.stat().st_mode) == 0o600
