@@ -111,7 +111,7 @@ class SecureMonarchSession:
                 # mode would be worse, and crashing the whole fallback path worse
                 # still.
                 os.chmod(_TOKEN_FILE, mode)
-            f = os.fdopen(fd, "w")
+            f = os.fdopen(fd, "w", encoding="utf-8")
         except BaseException:
             os.close(fd)
             raise
@@ -146,7 +146,7 @@ class SecureMonarchSession:
             logger.warning(f"⚠️  Refusing to read {_TOKEN_FILE}: {e}")
             return None
         try:
-            f = os.fdopen(fd, "r")
+            f = os.fdopen(fd, "r", encoding="utf-8")
         except BaseException:
             os.close(fd)
             raise

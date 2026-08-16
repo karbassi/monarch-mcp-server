@@ -2,6 +2,7 @@
 
 import os
 import sys
+import textwrap
 import types
 from unittest.mock import MagicMock
 
@@ -626,3 +627,52 @@ class _Foreign:
     @property
     def st_uid(self):
         return self._st.st_uid + 1
+
+
+class TestTokenFileEncoding:
+    """Session blobs must round-trip as UTF-8 regardless of the process locale.
+
+    The file fallback exists for headless Linux, where a C/POSIX locale is
+    common (bare Docker images, systemd units without LANG set). With encoding
+    left to the locale, a blob carrying a non-ASCII cookie value raises
+    UnicodeEncodeError on write and mojibake on read.
+    """
+
+    def test_round_trip_under_c_locale(self, tmp_path):
+        import subprocess
+        import sys
+
+        script = textwrap.dedent(
+            """
+            import sys
+            from pathlib import Path
+            from monarch_mcp_server import secure_session as ss
+
+            store = Path(sys.argv[1]) / "store"
+            ss._TOKEN_DIR = store
+            ss._TOKEN_FILE = store / "token"
+
+            blob = '{"token": "caf\\u00e9-t\\u00f6ken", "auth_mode": "token"}'
+            s = ss.SecureMonarchSession()
+            s._save_token_file(blob)
+            assert (store / "token").read_bytes() == blob.encode("utf-8"), "not utf-8 on disk"
+            assert s._load_token_file() == blob, "did not round-trip"
+            print("OK")
+            """
+        )
+        env = {
+            **os.environ,
+            "LC_ALL": "C",
+            "LANG": "C",
+            "PYTHONUTF8": "0",
+            "PYTHONCOERCECLOCALE": "0",
+        }
+        proc = subprocess.run(
+            [sys.executable, "-c", script, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,  # asserted on below, with the child's output attached
+        )
+        assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+        assert "OK" in proc.stdout
