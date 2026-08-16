@@ -543,3 +543,86 @@ class TestFileFallbackPermissions:
 
         assert token_file.read_text() == "super-secret-token"
         assert _stat.S_IMODE(token_file.stat().st_mode) == 0o600
+
+
+class TestFileFallbackReadPath:
+    """The read path must not be turned into an exfiltration primitive.
+
+    _load_token_file's result is handed to callers that, when it isn't JSON,
+    treat it as a bare token and send it as an Authorization header to
+    api.monarch.com. So anything this returns is content we transmit to a third
+    party, and it must come from a file we actually own.
+    """
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        store = tmp_path / "store"
+        store.mkdir()
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", store / "token")
+        return store
+
+    def test_reads_a_normal_token(self, store):
+        (store / "token").write_text("  real-token\n")
+        assert ss_module.SecureMonarchSession()._load_token_file() == "real-token"
+
+    def test_returns_none_when_absent(self, store):
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+    def test_symlink_is_not_followed(self, store, tmp_path):
+        secret = tmp_path / "id_rsa"
+        secret.write_text("-----BEGIN PRIVATE KEY-----")
+        (store / "token").symlink_to(secret)
+
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+    def test_symlink_is_not_followed_without_o_nofollow(
+        self, store, tmp_path, monkeypatch
+    ):
+        secret = tmp_path / "id_rsa"
+        secret.write_text("-----BEGIN PRIVATE KEY-----")
+        (store / "token").symlink_to(secret)
+        monkeypatch.delattr(ss_module.os, "O_NOFOLLOW", raising=False)
+
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+    def test_non_regular_file_is_refused(self, store, monkeypatch):
+        token_file = store / "token"
+        real_open = ss_module.os.open
+
+        def _devnull_open(path, flags, *a):
+            if os.fspath(path) == os.fspath(token_file):
+                return real_open(os.devnull, os.O_RDONLY)
+            return real_open(path, flags, *a)
+
+        token_file.write_text("placeholder")
+        monkeypatch.setattr(ss_module.os, "open", _devnull_open)
+
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+    def test_file_owned_by_another_user_is_refused(self, store, monkeypatch):
+        (store / "token").write_text("planted-token")
+        real_fstat = ss_module.os.fstat
+        monkeypatch.setattr(
+            ss_module.os, "fstat", lambda fd: _Foreign(real_fstat(fd))
+        )
+
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+    def test_absurdly_large_file_is_refused(self, store):
+        (store / "token").write_text("x" * (ss_module._MAX_TOKEN_BYTES + 1))
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+
+class _Foreign:
+    """os.stat_result proxy reporting a uid that isn't the current user's."""
+
+    def __init__(self, st):
+        self._st = st
+
+    def __getattr__(self, name):
+        return getattr(self._st, name)
+
+    @property
+    def st_uid(self):
+        return self._st.st_uid + 1

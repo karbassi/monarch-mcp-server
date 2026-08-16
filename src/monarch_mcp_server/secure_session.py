@@ -27,6 +27,10 @@ KEYRING_USERNAME = "monarch-token"
 # File-based fallback location
 _TOKEN_DIR = Path.home() / ".monarch-mcp-server"
 _TOKEN_FILE = _TOKEN_DIR / "token"
+# A stored session is a small JSON blob (token, device uuid, a few cookies).
+# Anything substantially larger did not come from us; cap the read rather than
+# pulling an arbitrarily large planted file into memory.
+_MAX_TOKEN_BYTES = 64 * 1024
 
 
 _PROBE_USERNAME = "__keyring_probe__"
@@ -117,11 +121,56 @@ class SecureMonarchSession:
         logger.info(f"✅ Token saved to {_TOKEN_FILE}")
 
     def _load_token_file(self) -> Optional[str]:
-        if _TOKEN_FILE.is_file():
-            token = _TOKEN_FILE.read_text().strip()
-            if token:
-                logger.info(f"✅ Token loaded from {_TOKEN_FILE}")
-                return token
+        # Whatever this returns is credential material: load_session_blob treats
+        # a non-JSON value as a bare token and sends it to api.monarch.com as an
+        # Authorization header. A symlink planted here would therefore exfiltrate
+        # whatever it points at, so the read path needs the same guarantees as
+        # the write path — the file must be a regular file that we own.
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if not nofollow and _TOKEN_FILE.is_symlink():
+            # Best-effort and racy, exactly as in _save_token_file.
+            logger.warning(f"⚠️  {_TOKEN_FILE} is a symlink; refusing to read")
+            return None
+        try:
+            # O_NONBLOCK so a FIFO left at the path fails the regular-file check
+            # below instead of hanging the open forever. It is a no-op for
+            # regular files.
+            fd = os.open(
+                _TOKEN_FILE,
+                os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0),
+            )
+        except FileNotFoundError:
+            return None
+        except OSError as e:
+            # ELOOP from O_NOFOLLOW lands here, as does anything unreadable.
+            logger.warning(f"⚠️  Refusing to read {_TOKEN_FILE}: {e}")
+            return None
+        try:
+            f = os.fdopen(fd, "r")
+        except BaseException:
+            os.close(fd)
+            raise
+        with f:
+            st = os.fstat(f.fileno())
+            if not stat.S_ISREG(st.st_mode):
+                logger.warning(f"⚠️  {_TOKEN_FILE} is not a regular file; refusing to read")
+                return None
+            getuid = getattr(os, "getuid", None)  # Unix-only
+            if getuid is not None and st.st_uid != getuid():
+                logger.warning(f"⚠️  {_TOKEN_FILE} is owned by another user; refusing to read")
+                return None
+            if st.st_size > _MAX_TOKEN_BYTES:
+                logger.warning(f"⚠️  {_TOKEN_FILE} is larger than a session blob; refusing to read")
+                return None
+            # Bounded independently of st_size, which can understate the content.
+            token = f.read(_MAX_TOKEN_BYTES + 1)
+        if len(token) > _MAX_TOKEN_BYTES:
+            logger.warning(f"⚠️  {_TOKEN_FILE} is larger than a session blob; refusing to read")
+            return None
+        token = token.strip()
+        if token:
+            logger.info(f"✅ Token loaded from {_TOKEN_FILE}")
+            return token
         return None
 
     def _delete_token_file(self) -> None:
