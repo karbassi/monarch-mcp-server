@@ -504,9 +504,11 @@ class TestFileFallbackPermissions:
             return real_open(path, flags, mode)
 
         monkeypatch.setattr(ss_module.os, "open", _devnull_open)
-        # fchmod on /dev/null raises EPERM for a non-root user, which would make
-        # this pass without exercising the fstat check at all. Neutralise it so
-        # the only thing that can reject the fd is the regular-file check.
+        # fchmod on /dev/null raises EPERM for a non-root user. It runs *after*
+        # the S_ISREG check, so it cannot preempt it today -- but if that check
+        # were ever removed, fchmod would raise anyway and this test would stay
+        # green while guarding nothing. Neutralise it so the regular-file check
+        # is the only thing that can reject the fd.
         monkeypatch.setattr(ss_module.os, "fchmod", lambda *_a, **_k: None)
 
         written = []
