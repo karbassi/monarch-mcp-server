@@ -11,6 +11,41 @@ import pytest
 from monarch_mcp_server import secure_session as ss_module
 from monarch_mcp_server.secure_session import _keyring_available
 
+# Captured before the autouse fixture below stubs it out, so the cleanup test
+# can still exercise the real implementation.
+_REAL_CLEANUP = ss_module.SecureMonarchSession._cleanup_old_session_files
+
+
+@pytest.fixture(autouse=True)
+def isolate_real_home(tmp_path, monkeypatch):
+    """Keep every test out of the developer's real home directory.
+
+    Two ways this bites without it. _load_token_file reads the module-level
+    _TOKEN_FILE, so a test asserting "no session" picks up the real token at
+    ~/.monarch-mcp-server/token and fails on any machine that has logged in --
+    while passing in CI, where no such file exists. And save_session_blob calls
+    _cleanup_old_session_files, which os.remove()s paths under expanduser("~"),
+    so merely running the suite deletes real files from the developer's home.
+
+    Note this does NOT patch $HOME. The real macOS Keychain backend resolves the
+    keychain through it, and the probe in _keyring_available() then blocks
+    indefinitely in SecItemAdd waiting on a GUI unlock prompt. Redirect the two
+    module constants and stub the one method that writes outside them instead.
+
+    Tests that need their own layout still override _TOKEN_DIR/_TOKEN_FILE.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(ss_module, "_TOKEN_DIR", home / ".monarch-mcp-server")
+    monkeypatch.setattr(
+        ss_module, "_TOKEN_FILE", home / ".monarch-mcp-server" / "token"
+    )
+    monkeypatch.setattr(
+        ss_module.SecureMonarchSession,
+        "_cleanup_old_session_files",
+        lambda self: None,
+    )
+
 
 class _FakeKeyring:
     """Minimal stand-in for the `keyring` module used by detection tests."""
@@ -676,3 +711,59 @@ class TestTokenFileEncoding:
         )
         assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
         assert "OK" in proc.stdout
+
+
+class TestTokenDirIsNotFollowed:
+    """O_NOFOLLOW on the token file guards only the final path component. If
+    _TOKEN_DIR itself is a symlink, the token still lands in a directory the
+    attacker controls — and chmod 0700 gets applied to their target."""
+
+    def test_save_refuses_symlinked_token_dir(self, tmp_path, monkeypatch):
+        attacker = tmp_path / "attacker"
+        attacker.mkdir()
+        link = tmp_path / "store"
+        link.symlink_to(attacker, target_is_directory=True)
+
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", link)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", link / "token")
+
+        with pytest.raises(OSError):
+            ss_module.SecureMonarchSession()._save_token_file("super-secret-token")
+
+        assert not (attacker / "token").exists(), "token landed in attacker dir"
+
+    def test_load_refuses_symlinked_token_dir(self, tmp_path, monkeypatch):
+        attacker = tmp_path / "attacker"
+        attacker.mkdir()
+        (attacker / "token").write_text("planted-token")
+        link = tmp_path / "store"
+        link.symlink_to(attacker, target_is_directory=True)
+
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", link)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", link / "token")
+
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+
+class TestCleanupOldSessionFiles:
+    """Upstream writes its pickled session to a CWD-relative .mm/ directory
+    (monarchmoney.SESSION_DIR = ".mm"), so cleaning only ~/.mm never finds it."""
+
+    def test_removes_cwd_relative_session_pickle(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        # expanduser("~") is redirected so the real implementation cannot reach
+        # the developer's home; $HOME itself stays put (see isolate_real_home).
+        fake_home = tmp_path / "home"  # already created by isolate_real_home
+        monkeypatch.setattr(
+            ss_module.os.path, "expanduser", lambda p: str(fake_home)
+        )
+
+        mm = tmp_path / ".mm"
+        mm.mkdir()
+        pickle = mm / "mm_session.pickle"
+        pickle.write_text("pickled-credentials")
+
+        _REAL_CLEANUP(ss_module.SecureMonarchSession())
+
+        assert not pickle.exists(), "CWD-relative session pickle was not cleaned up"
+        assert not mm.exists(), "emptied .mm directory was not removed"

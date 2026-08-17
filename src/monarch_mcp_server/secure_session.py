@@ -74,7 +74,23 @@ class SecureMonarchSession:
 
     # -- file-based helpers --------------------------------------------------
 
+    @staticmethod
+    def _assert_token_dir_safe() -> None:
+        """Refuse to use _TOKEN_DIR when it is a symlink.
+
+        O_NOFOLLOW on the token file guards only the final path component. A
+        symlinked _TOKEN_DIR redirects both the read and the write into a
+        directory someone else controls, and _save_token_file's chmod 0700 then
+        lands on their target. Like the other precheck, this is best-effort:
+        mkdir/open are separate syscalls, so the link could be swapped in
+        afterwards. Closing that properly needs openat(2) against a directory
+        fd, which Python exposes only patchily across platforms.
+        """
+        if _TOKEN_DIR.is_symlink():
+            raise OSError(f"{_TOKEN_DIR} is a symlink; refusing to use it")
+
     def _save_token_file(self, token: str) -> None:
+        self._assert_token_dir_safe()
         _TOKEN_DIR.mkdir(parents=True, exist_ok=True)
         _TOKEN_DIR.chmod(stat.S_IRWXU)  # 700
         # Create the file already locked to owner-only (0600) instead of
@@ -126,6 +142,11 @@ class SecureMonarchSession:
         # Authorization header. A symlink planted here would therefore exfiltrate
         # whatever it points at, so the read path needs the same guarantees as
         # the write path — the file must be a regular file that we own.
+        try:
+            self._assert_token_dir_safe()
+        except OSError as e:
+            logger.warning(f"⚠️  Refusing to read the token file: {e}")
+            return None
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         if not nofollow and _TOKEN_FILE.is_symlink():
             # Best-effort and racy, exactly as in _save_token_file.
@@ -390,10 +411,18 @@ class SecureMonarchSession:
     def _cleanup_old_session_files(self) -> None:
         """Clean up old insecure session files."""
         home = os.path.expanduser("~")
+        # monarchmoney.SESSION_DIR is the bare relative path ".mm", so the
+        # library writes its pickled session under the *current directory*, not
+        # under $HOME. Cleaning only ~/.mm never found the file it was written
+        # to remove. Sweep both. Files first, so the directories are empty by
+        # the time their turn comes.
+        cwd = os.getcwd()
         cleanup_paths = [
             os.path.join(home, ".mm", "mm_session.pickle"),
+            os.path.join(cwd, ".mm", "mm_session.pickle"),
             os.path.join(home, "monarch_session.json"),
             os.path.join(home, ".mm"),  # Remove the entire directory if empty
+            os.path.join(cwd, ".mm"),
         ]
 
         for path in cleanup_paths:
