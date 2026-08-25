@@ -1,6 +1,8 @@
 """Tests for keyring backend detection and secure session storage."""
 
+import os
 import sys
+import textwrap
 import types
 from unittest.mock import MagicMock
 
@@ -8,6 +10,41 @@ import pytest
 
 from monarch_mcp_server import secure_session as ss_module
 from monarch_mcp_server.secure_session import _keyring_available
+
+# Captured before the autouse fixture below stubs it out, so the cleanup test
+# can still exercise the real implementation.
+_REAL_CLEANUP = ss_module.SecureMonarchSession._cleanup_old_session_files
+
+
+@pytest.fixture(autouse=True)
+def isolate_real_home(tmp_path, monkeypatch):
+    """Keep every test out of the developer's real home directory.
+
+    Two ways this bites without it. _load_token_file reads the module-level
+    _TOKEN_FILE, so a test asserting "no session" picks up the real token at
+    ~/.monarch-mcp-server/token and fails on any machine that has logged in --
+    while passing in CI, where no such file exists. And save_session_blob calls
+    _cleanup_old_session_files, which os.remove()s paths under expanduser("~"),
+    so merely running the suite deletes real files from the developer's home.
+
+    Note this does NOT patch $HOME. The real macOS Keychain backend resolves the
+    keychain through it, and the probe in _keyring_available() then blocks
+    indefinitely in SecItemAdd waiting on a GUI unlock prompt. Redirect the two
+    module constants and stub the one method that writes outside them instead.
+
+    Tests that need their own layout still override _TOKEN_DIR/_TOKEN_FILE.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(ss_module, "_TOKEN_DIR", home / ".monarch-mcp-server")
+    monkeypatch.setattr(
+        ss_module, "_TOKEN_FILE", home / ".monarch-mcp-server" / "token"
+    )
+    monkeypatch.setattr(
+        ss_module.SecureMonarchSession,
+        "_cleanup_old_session_files",
+        lambda self: None,
+    )
 
 
 class _FakeKeyring:
@@ -334,3 +371,401 @@ class TestGetAuthenticatedClient:
     def test_no_session_returns_none(self, storage_keyring):
         session, _ = storage_keyring
         assert session.get_authenticated_client() is None
+
+
+class TestFileFallbackPermissions:
+    """The plaintext file fallback must never expose the token to other users."""
+
+    def test_token_file_created_locked_not_via_write_text(self, tmp_path, monkeypatch):
+        """The token file must be created already locked to 0600, not written
+        world-readable and chmod'd afterward (which leaves a race window)."""
+        import stat as _stat
+
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", tmp_path / "store")
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", tmp_path / "store" / "token")
+
+        # A revert to write_text()-then-chmod would trip this and fail loudly.
+        def _boom(*_a, **_k):
+            raise AssertionError("token file must not be created via write_text()")
+
+        monkeypatch.setattr(ss_module.Path, "write_text", _boom)
+
+        token_file = tmp_path / "store" / "token"
+
+        # ss_module.os is the os module itself, so this patch is process-wide for
+        # the duration of the test — record only opens of the token path, or an
+        # unrelated os.open (e.g. a logging handler) would pollute the assertion.
+        create_modes = []
+        real_open = ss_module.os.open
+
+        def _recording_open(path, flags, mode=0o777):
+            if os.fspath(path) == os.fspath(token_file):
+                create_modes.append(mode)
+            return real_open(path, flags, mode)
+
+        monkeypatch.setattr(ss_module.os, "open", _recording_open)
+
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("super-secret-token")
+
+        assert token_file.read_text() == "super-secret-token"
+        assert create_modes and all(m == 0o600 for m in create_modes)
+        assert _stat.S_IMODE(token_file.stat().st_mode) == 0o600
+
+    def test_preexisting_file_locked_down_before_token_is_written(
+        self, tmp_path, monkeypatch
+    ):
+        """O_CREAT's mode applies only when creating. A pre-existing token file
+        with broader permissions must be narrowed to 0600 *before* the new token
+        is written, not chmod'd afterward."""
+        import stat as _stat
+
+        store = tmp_path / "store"
+        store.mkdir()
+        token_file = store / "token"
+        token_file.write_text("stale-token")
+        token_file.chmod(0o644)
+
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", token_file)
+
+        modes_at_write = []
+        real_fdopen = ss_module.os.fdopen
+
+        class _ModeRecordingFile:
+            """Records the file's on-disk mode at the moment content lands."""
+
+            def __init__(self, wrapped):
+                self._wrapped = wrapped
+
+            def write(self, data):
+                modes_at_write.append(_stat.S_IMODE(token_file.stat().st_mode))
+                return self._wrapped.write(data)
+
+            def __enter__(self):
+                self._wrapped.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self._wrapped.__exit__(*exc)
+
+        monkeypatch.setattr(
+            ss_module.os,
+            "fdopen",
+            lambda fd, *a, **k: _ModeRecordingFile(real_fdopen(fd, *a, **k)),
+        )
+
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("super-secret-token")
+
+        assert token_file.read_text() == "super-secret-token"
+        # Guard: an empty list would pass the all() below vacuously.
+        assert modes_at_write, "token was never written"
+        assert all(m == 0o600 for m in modes_at_write), (
+            f"token written while file was {[oct(m) for m in modes_at_write]}"
+        )
+        assert _stat.S_IMODE(token_file.stat().st_mode) == 0o600
+
+    def test_symlink_at_token_path_is_refused(self, tmp_path, monkeypatch):
+        """A symlink planted at the token path must not redirect the write. The
+        open must fail rather than follow it to an attacker-chosen target."""
+        store = tmp_path / "store"
+        store.mkdir()
+        token_file = store / "token"
+        victim = tmp_path / "victim"
+        victim.write_text("do-not-clobber")
+        token_file.symlink_to(victim)
+
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", token_file)
+
+        session = ss_module.SecureMonarchSession()
+        with pytest.raises(OSError):
+            session._save_token_file("super-secret-token")
+
+        assert victim.read_text() == "do-not-clobber"
+
+    def test_non_regular_file_at_token_path_is_refused(self, tmp_path, monkeypatch):
+        """Even without a symlink, the fd must be verified to be a regular file
+        before the token is written to it."""
+        store = tmp_path / "store"
+        store.mkdir()
+        token_file = store / "token"
+
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", token_file)
+
+        # Hand back an fd to a character device; nothing should be written to it.
+        real_open = ss_module.os.open
+
+        def _devnull_open(path, flags, mode=0o777):
+            if os.fspath(path) == os.fspath(token_file):
+                return real_open(os.devnull, os.O_WRONLY)
+            return real_open(path, flags, mode)
+
+        monkeypatch.setattr(ss_module.os, "open", _devnull_open)
+        # fchmod on /dev/null raises EPERM for a non-root user. It runs *after*
+        # the S_ISREG check, so it cannot preempt it today -- but if that check
+        # were ever removed, fchmod would raise anyway and this test would stay
+        # green while guarding nothing. Neutralise it so the regular-file check
+        # is the only thing that can reject the fd.
+        monkeypatch.setattr(ss_module.os, "fchmod", lambda *_a, **_k: None)
+
+        written = []
+        real_fdopen = ss_module.os.fdopen
+
+        class _RecordingFile:
+            def __init__(self, wrapped):
+                self._wrapped = wrapped
+
+            def write(self, data):
+                written.append(data)
+                return self._wrapped.write(data)
+
+            def __enter__(self):
+                self._wrapped.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self._wrapped.__exit__(*exc)
+
+        monkeypatch.setattr(
+            ss_module.os,
+            "fdopen",
+            lambda fd, *a, **k: _RecordingFile(real_fdopen(fd, *a, **k)),
+        )
+
+        session = ss_module.SecureMonarchSession()
+        with pytest.raises(OSError):
+            session._save_token_file("super-secret-token")
+
+        assert not written, "token was written to a non-regular file"
+
+    def test_symlink_refused_without_o_nofollow(self, tmp_path, monkeypatch):
+        """O_NOFOLLOW is Unix-only. On a platform without it there must still be
+        a best-effort symlink check rather than silently following the link."""
+        store = tmp_path / "store"
+        store.mkdir()
+        token_file = store / "token"
+        victim = tmp_path / "victim"
+        victim.write_text("do-not-clobber")
+        token_file.symlink_to(victim)
+
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", token_file)
+        monkeypatch.delattr(ss_module.os, "O_NOFOLLOW", raising=False)
+
+        session = ss_module.SecureMonarchSession()
+        with pytest.raises(OSError):
+            session._save_token_file("super-secret-token")
+
+        assert victim.read_text() == "do-not-clobber"
+
+    def test_save_works_without_fchmod(self, tmp_path, monkeypatch):
+        """os.fchmod is Unix-only; its absence must not break the fallback path.
+        The file must still end up at 0600."""
+        import stat as _stat
+
+        store = tmp_path / "store"
+        store.mkdir()
+        token_file = store / "token"
+        token_file.write_text("stale-token")
+        token_file.chmod(0o644)
+
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", token_file)
+        monkeypatch.delattr(ss_module.os, "fchmod", raising=False)
+
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("super-secret-token")
+
+        assert token_file.read_text() == "super-secret-token"
+        assert _stat.S_IMODE(token_file.stat().st_mode) == 0o600
+
+
+class TestFileFallbackReadPath:
+    """The read path must not be turned into an exfiltration primitive.
+
+    _load_token_file's result is handed to callers that, when it isn't JSON,
+    treat it as a bare token and send it as an Authorization header to
+    api.monarch.com. So anything this returns is content we transmit to a third
+    party, and it must come from a file we actually own.
+    """
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        store = tmp_path / "store"
+        store.mkdir()
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", store / "token")
+        return store
+
+    def test_reads_a_normal_token(self, store):
+        (store / "token").write_text("  real-token\n")
+        assert ss_module.SecureMonarchSession()._load_token_file() == "real-token"
+
+    def test_returns_none_when_absent(self, store):
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+    def test_symlink_is_not_followed(self, store, tmp_path):
+        secret = tmp_path / "id_rsa"
+        secret.write_text("-----BEGIN PRIVATE KEY-----")
+        (store / "token").symlink_to(secret)
+
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+    def test_symlink_is_not_followed_without_o_nofollow(
+        self, store, tmp_path, monkeypatch
+    ):
+        secret = tmp_path / "id_rsa"
+        secret.write_text("-----BEGIN PRIVATE KEY-----")
+        (store / "token").symlink_to(secret)
+        monkeypatch.delattr(ss_module.os, "O_NOFOLLOW", raising=False)
+
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+    def test_non_regular_file_is_refused(self, store, monkeypatch):
+        token_file = store / "token"
+        real_open = ss_module.os.open
+
+        def _devnull_open(path, flags, *a):
+            if os.fspath(path) == os.fspath(token_file):
+                return real_open(os.devnull, os.O_RDONLY)
+            return real_open(path, flags, *a)
+
+        token_file.write_text("placeholder")
+        monkeypatch.setattr(ss_module.os, "open", _devnull_open)
+
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+    def test_file_owned_by_another_user_is_refused(self, store, monkeypatch):
+        (store / "token").write_text("planted-token")
+        real_fstat = ss_module.os.fstat
+        monkeypatch.setattr(
+            ss_module.os, "fstat", lambda fd: _Foreign(real_fstat(fd))
+        )
+
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+    def test_absurdly_large_file_is_refused(self, store):
+        (store / "token").write_text("x" * (ss_module._MAX_TOKEN_BYTES + 1))
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+
+class _Foreign:
+    """os.stat_result proxy reporting a uid that isn't the current user's."""
+
+    def __init__(self, st):
+        self._st = st
+
+    def __getattr__(self, name):
+        return getattr(self._st, name)
+
+    @property
+    def st_uid(self):
+        return self._st.st_uid + 1
+
+
+class TestTokenFileEncoding:
+    """Session blobs must round-trip as UTF-8 regardless of the process locale.
+
+    The file fallback exists for headless Linux, where a C/POSIX locale is
+    common (bare Docker images, systemd units without LANG set). With encoding
+    left to the locale, a blob carrying a non-ASCII cookie value raises
+    UnicodeEncodeError on write and mojibake on read.
+    """
+
+    def test_round_trip_under_c_locale(self, tmp_path):
+        import subprocess
+        import sys
+
+        script = textwrap.dedent(
+            """
+            import sys
+            from pathlib import Path
+            from monarch_mcp_server import secure_session as ss
+
+            store = Path(sys.argv[1]) / "store"
+            ss._TOKEN_DIR = store
+            ss._TOKEN_FILE = store / "token"
+
+            blob = '{"token": "caf\\u00e9-t\\u00f6ken", "auth_mode": "token"}'
+            s = ss.SecureMonarchSession()
+            s._save_token_file(blob)
+            assert (store / "token").read_bytes() == blob.encode("utf-8"), "not utf-8 on disk"
+            assert s._load_token_file() == blob, "did not round-trip"
+            print("OK")
+            """
+        )
+        env = {
+            **os.environ,
+            "LC_ALL": "C",
+            "LANG": "C",
+            "PYTHONUTF8": "0",
+            "PYTHONCOERCECLOCALE": "0",
+        }
+        proc = subprocess.run(
+            [sys.executable, "-c", script, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,  # asserted on below, with the child's output attached
+        )
+        assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+        assert "OK" in proc.stdout
+
+
+class TestTokenDirIsNotFollowed:
+    """O_NOFOLLOW on the token file guards only the final path component. If
+    _TOKEN_DIR itself is a symlink, the token still lands in a directory the
+    attacker controls — and chmod 0700 gets applied to their target."""
+
+    def test_save_refuses_symlinked_token_dir(self, tmp_path, monkeypatch):
+        attacker = tmp_path / "attacker"
+        attacker.mkdir()
+        link = tmp_path / "store"
+        link.symlink_to(attacker, target_is_directory=True)
+
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", link)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", link / "token")
+
+        with pytest.raises(OSError):
+            ss_module.SecureMonarchSession()._save_token_file("super-secret-token")
+
+        assert not (attacker / "token").exists(), "token landed in attacker dir"
+
+    def test_load_refuses_symlinked_token_dir(self, tmp_path, monkeypatch):
+        attacker = tmp_path / "attacker"
+        attacker.mkdir()
+        (attacker / "token").write_text("planted-token")
+        link = tmp_path / "store"
+        link.symlink_to(attacker, target_is_directory=True)
+
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", link)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", link / "token")
+
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+
+class TestCleanupOldSessionFiles:
+    """Upstream writes its pickled session to a CWD-relative .mm/ directory
+    (monarchmoney.SESSION_DIR = ".mm"), so cleaning only ~/.mm never finds it."""
+
+    def test_removes_cwd_relative_session_pickle(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        # expanduser("~") is redirected so the real implementation cannot reach
+        # the developer's home; $HOME itself stays put (see isolate_real_home).
+        fake_home = tmp_path / "home"  # already created by isolate_real_home
+        monkeypatch.setattr(
+            ss_module.os.path, "expanduser", lambda p: str(fake_home)
+        )
+
+        mm = tmp_path / ".mm"
+        mm.mkdir()
+        pickle = mm / "mm_session.pickle"
+        pickle.write_text("pickled-credentials")
+
+        _REAL_CLEANUP(ss_module.SecureMonarchSession())
+
+        assert not pickle.exists(), "CWD-relative session pickle was not cleaned up"
+        assert not mm.exists(), "emptied .mm directory was not removed"

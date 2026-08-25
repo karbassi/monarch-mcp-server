@@ -27,6 +27,10 @@ KEYRING_USERNAME = "monarch-token"
 # File-based fallback location
 _TOKEN_DIR = Path.home() / ".monarch-mcp-server"
 _TOKEN_FILE = _TOKEN_DIR / "token"
+# A stored session is a small JSON blob (token, device uuid, a few cookies).
+# Anything substantially larger did not come from us; cap the read rather than
+# pulling an arbitrarily large planted file into memory.
+_MAX_TOKEN_BYTES = 64 * 1024
 
 
 _PROBE_USERNAME = "__keyring_probe__"
@@ -70,20 +74,124 @@ class SecureMonarchSession:
 
     # -- file-based helpers --------------------------------------------------
 
+    @staticmethod
+    def _assert_token_dir_safe() -> None:
+        """Refuse to use _TOKEN_DIR when it is a symlink.
+
+        O_NOFOLLOW on the token file guards only the final path component. A
+        symlinked _TOKEN_DIR redirects both the read and the write into a
+        directory someone else controls, and _save_token_file's chmod 0700 then
+        lands on their target. Like the other precheck, this is best-effort:
+        mkdir/open are separate syscalls, so the link could be swapped in
+        afterwards. Closing that properly needs openat(2) against a directory
+        fd, which Python exposes only patchily across platforms.
+        """
+        if _TOKEN_DIR.is_symlink():
+            raise OSError(f"{_TOKEN_DIR} is a symlink; refusing to use it")
+
     def _save_token_file(self, token: str) -> None:
+        self._assert_token_dir_safe()
         _TOKEN_DIR.mkdir(parents=True, exist_ok=True)
-        # Write with owner-only permissions
-        _TOKEN_FILE.write_text(token)
-        _TOKEN_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
         _TOKEN_DIR.chmod(stat.S_IRWXU)  # 700
+        # Create the file already locked to owner-only (0600) instead of
+        # write_text()-then-chmod, which leaves a window where the token is
+        # world-readable under a default umask.
+        mode = stat.S_IRUSR | stat.S_IWUSR  # 600
+        # O_NOFOLLOW refuses a symlink planted at the token path outright, rather
+        # than following it and writing the token to an attacker-chosen target.
+        # It is Unix-only (absent on Windows), hence the getattr.
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if not nofollow and _TOKEN_FILE.is_symlink():
+            # Best-effort, and racy by construction: without O_NOFOLLOW there is
+            # no way to make "refuse a symlink" atomic with the open, so the link
+            # could be planted in between. Still worth doing on a platform that
+            # offers no alternative.
+            raise OSError(f"{_TOKEN_FILE} is a symlink; refusing to write")
+        fd = os.open(_TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | nofollow, mode)
+        try:
+            # O_NOFOLLOW only rejects symlinks, so confirm we really hold a plain
+            # file before writing a credential into it — not a device or socket
+            # someone left at the path.
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(f"{_TOKEN_FILE} is not a regular file; refusing to write")
+            # O_CREAT honors the mode only when creating, so a pre-existing file
+            # keeps its old (possibly 0644) mode. Narrow it before any token bytes
+            # land. Prefer fchmod: it targets the open file, so unlike a path-based
+            # chmod it cannot be redirected by a symlink swapped in after the open.
+            fchmod = getattr(os, "fchmod", None)
+            if fchmod is not None:
+                fchmod(fd, mode)
+            else:
+                # Unix-only, like O_NOFOLLOW. Falling back to the path is weaker
+                # for the reason above, but leaving a pre-existing file at its old
+                # mode would be worse, and crashing the whole fallback path worse
+                # still.
+                os.chmod(_TOKEN_FILE, mode)
+            f = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:
+            os.close(fd)
+            raise
+        # fdopen took ownership of fd; closing f closes it exactly once.
+        with f:
+            f.write(token)
         logger.info(f"✅ Token saved to {_TOKEN_FILE}")
 
     def _load_token_file(self) -> Optional[str]:
-        if _TOKEN_FILE.is_file():
-            token = _TOKEN_FILE.read_text().strip()
-            if token:
-                logger.info(f"✅ Token loaded from {_TOKEN_FILE}")
-                return token
+        # Whatever this returns is credential material: load_session_blob treats
+        # a non-JSON value as a bare token and sends it to api.monarch.com as an
+        # Authorization header. A symlink planted here would therefore exfiltrate
+        # whatever it points at, so the read path needs the same guarantees as
+        # the write path — the file must be a regular file that we own.
+        try:
+            self._assert_token_dir_safe()
+        except OSError as e:
+            logger.warning(f"⚠️  Refusing to read the token file: {e}")
+            return None
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if not nofollow and _TOKEN_FILE.is_symlink():
+            # Best-effort and racy, exactly as in _save_token_file.
+            logger.warning(f"⚠️  {_TOKEN_FILE} is a symlink; refusing to read")
+            return None
+        try:
+            # O_NONBLOCK so a FIFO left at the path fails the regular-file check
+            # below instead of hanging the open forever. It is a no-op for
+            # regular files.
+            fd = os.open(
+                _TOKEN_FILE,
+                os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0),
+            )
+        except FileNotFoundError:
+            return None
+        except OSError as e:
+            # ELOOP from O_NOFOLLOW lands here, as does anything unreadable.
+            logger.warning(f"⚠️  Refusing to read {_TOKEN_FILE}: {e}")
+            return None
+        try:
+            f = os.fdopen(fd, "r", encoding="utf-8")
+        except BaseException:
+            os.close(fd)
+            raise
+        with f:
+            st = os.fstat(f.fileno())
+            if not stat.S_ISREG(st.st_mode):
+                logger.warning(f"⚠️  {_TOKEN_FILE} is not a regular file; refusing to read")
+                return None
+            getuid = getattr(os, "getuid", None)  # Unix-only
+            if getuid is not None and st.st_uid != getuid():
+                logger.warning(f"⚠️  {_TOKEN_FILE} is owned by another user; refusing to read")
+                return None
+            if st.st_size > _MAX_TOKEN_BYTES:
+                logger.warning(f"⚠️  {_TOKEN_FILE} is larger than a session blob; refusing to read")
+                return None
+            # Bounded independently of st_size, which can understate the content.
+            token = f.read(_MAX_TOKEN_BYTES + 1)
+        if len(token) > _MAX_TOKEN_BYTES:
+            logger.warning(f"⚠️  {_TOKEN_FILE} is larger than a session blob; refusing to read")
+            return None
+        token = token.strip()
+        if token:
+            logger.info(f"✅ Token loaded from {_TOKEN_FILE}")
+            return token
         return None
 
     def _delete_token_file(self) -> None:
@@ -303,10 +411,18 @@ class SecureMonarchSession:
     def _cleanup_old_session_files(self) -> None:
         """Clean up old insecure session files."""
         home = os.path.expanduser("~")
+        # monarchmoney.SESSION_DIR is the bare relative path ".mm", so the
+        # library writes its pickled session under the *current directory*, not
+        # under $HOME. Cleaning only ~/.mm never found the file it was written
+        # to remove. Sweep both. Files first, so the directories are empty by
+        # the time their turn comes.
+        cwd = os.getcwd()
         cleanup_paths = [
             os.path.join(home, ".mm", "mm_session.pickle"),
+            os.path.join(cwd, ".mm", "mm_session.pickle"),
             os.path.join(home, "monarch_session.json"),
             os.path.join(home, ".mm"),  # Remove the entire directory if empty
+            os.path.join(cwd, ".mm"),
         ]
 
         for path in cleanup_paths:
