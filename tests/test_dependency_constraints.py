@@ -55,3 +55,40 @@ def test_mcp_constraint_excludes_releases_without_fastmcp(source):
         f"constraint admits mcp {MCP_BROKEN}, which has no mcp.server.fastmcp; "
         "a fresh install would resolve to a server that cannot start"
     )
+
+
+# Transitive packages we pin a floor on purely to keep known-vulnerable
+# versions out of a fresh resolve. Each entry is (package, version we must
+# reject, advisory, first patched version) taken from the GitHub Advisory
+# Database, not from the constraint under test.
+VULNERABLE_TRANSITIVES = [
+    pytest.param(
+        "idna", "3.10", "GHSA-65pc-fj4g-8rjx", "3.15",
+        id="idna-GHSA-65pc-fj4g-8rjx",
+    ),
+    pytest.param(
+        "aiohttp", "3.14.1", "GHSA-cq5v-8q36-5273", "3.14.3",
+        id="aiohttp-GHSA-cq5v-8q36-5273",
+    ),
+]
+
+
+@pytest.mark.parametrize("package, vulnerable, advisory, patched", VULNERABLE_TRANSITIVES)
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(_pyproject_requirements, id="pyproject.toml"),
+        pytest.param(_requirements_txt, id="requirements.txt"),
+    ],
+)
+def test_vulnerable_transitive_versions_are_excluded(
+    source, package, vulnerable, advisory, patched
+):
+    spec = _declared(package, source()).specifier
+    assert not spec.contains(vulnerable), (
+        f"constraint admits {package} {vulnerable}, which is affected by "
+        f"{advisory} (first patched: {patched})"
+    )
+    assert spec.contains(patched), (
+        f"constraint rejects {package} {patched}, the first patched release"
+    )
