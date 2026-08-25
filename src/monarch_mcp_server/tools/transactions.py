@@ -692,7 +692,7 @@ async def update_transaction(
         hide_from_reports: Whether to hide this transaction from reports
         needs_review: Whether this transaction needs review
         reviewed: Set True to mark the transaction reviewed. To clear reviewed
-            status use needs_review=True instead -- these are separate fields
+            status, use needs_review=True instead -- these are separate fields
         notes: Notes for the transaction
     """
     try:

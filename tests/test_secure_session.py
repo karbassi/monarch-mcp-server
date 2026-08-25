@@ -1,6 +1,7 @@
 """Tests for keyring backend detection and secure session storage."""
 
 import os
+import stat
 import sys
 import textwrap
 import types
@@ -14,6 +15,22 @@ from monarch_mcp_server.secure_session import _keyring_available
 # Captured before the autouse fixture below stubs it out, so the cleanup test
 # can still exercise the real implementation.
 _REAL_CLEANUP = ss_module.SecureMonarchSession._cleanup_old_session_files
+
+
+def assert_owner_only_mode(path, expected):
+    """Assert POSIX mode bits, but only where the platform enforces them.
+
+    Windows honours the read-only attribute and nothing else, so chmod/0600 is
+    inert there -- which is exactly why the file fallback encrypts at rest with
+    DPAPI on that platform instead of relying on mode bits. Asserting them
+    unconditionally would fail on the one platform this protection was added
+    for. The rest of each test still runs.
+    """
+    if sys.platform == "win32":
+        return
+    assert (
+        stat.S_IMODE(path.stat().st_mode) == expected
+    ), f"{path} is {oct(stat.S_IMODE(path.stat().st_mode))}, expected {oct(expected)}"
 
 
 @pytest.fixture(autouse=True)
@@ -107,9 +124,7 @@ class TestKeyringAvailable:
         assert len(fake.get_calls) == 1
         assert len(fake.delete_calls) == 1
 
-    def test_macos_keychain_class_name_collision_is_handled(
-        self, install_fake_keyring
-    ):
+    def test_macos_keychain_class_name_collision_is_handled(self, install_fake_keyring):
         """The macOS Keychain and fail backends share the class name `Keyring`.
 
         Previously this caused real macOS keyrings to be rejected by name and
@@ -152,9 +167,11 @@ class TestKeyringAvailable:
     def test_returns_false_when_keyring_not_installed(self, monkeypatch):
         """If the keyring package is absent, treat as unavailable, don't crash."""
 
-        real_import = __builtins__["__import__"] if isinstance(
-            __builtins__, dict
-        ) else __builtins__.__import__
+        real_import = (
+            __builtins__["__import__"]
+            if isinstance(__builtins__, dict)
+            else __builtins__.__import__
+        )
 
         def fake_import(name, *args, **kwargs):
             if name == "keyring":
@@ -327,7 +344,9 @@ class TestBackwardCompatLoading:
 class TestGetAuthenticatedClient:
     """get_authenticated_client must dispatch on the stored auth_mode."""
 
-    def test_cookie_mode_calls_set_cookies_on_client(self, storage_keyring, monkeypatch):
+    def test_cookie_mode_calls_set_cookies_on_client(
+        self, storage_keyring, monkeypatch
+    ):
         session, _ = storage_keyring
         session.save_session_blob(
             cookies={"session_id": "s", "csrftoken": "c"},
@@ -410,7 +429,7 @@ class TestFileFallbackPermissions:
 
         assert token_file.read_text() == "super-secret-token"
         assert create_modes and all(m == 0o600 for m in create_modes)
-        assert _stat.S_IMODE(token_file.stat().st_mode) == 0o600
+        assert_owner_only_mode(token_file, 0o600)
 
     def test_preexisting_file_locked_down_before_token_is_written(
         self, tmp_path, monkeypatch
@@ -461,10 +480,10 @@ class TestFileFallbackPermissions:
         assert token_file.read_text() == "super-secret-token"
         # Guard: an empty list would pass the all() below vacuously.
         assert modes_at_write, "token was never written"
-        assert all(m == 0o600 for m in modes_at_write), (
-            f"token written while file was {[oct(m) for m in modes_at_write]}"
-        )
-        assert _stat.S_IMODE(token_file.stat().st_mode) == 0o600
+        assert all(
+            m == 0o600 for m in modes_at_write
+        ), f"token written while file was {[oct(m) for m in modes_at_write]}"
+        assert_owner_only_mode(token_file, 0o600)
 
     def test_symlink_at_token_path_is_refused(self, tmp_path, monkeypatch):
         """A symlink planted at the token path must not redirect the write. The
@@ -580,7 +599,7 @@ class TestFileFallbackPermissions:
         session._save_token_file("super-secret-token")
 
         assert token_file.read_text() == "super-secret-token"
-        assert _stat.S_IMODE(token_file.stat().st_mode) == 0o600
+        assert_owner_only_mode(token_file, 0o600)
 
 
 class TestFileFallbackReadPath:
@@ -641,9 +660,7 @@ class TestFileFallbackReadPath:
     def test_file_owned_by_another_user_is_refused(self, store, monkeypatch):
         (store / "token").write_text("planted-token")
         real_fstat = ss_module.os.fstat
-        monkeypatch.setattr(
-            ss_module.os, "fstat", lambda fd: _Foreign(real_fstat(fd))
-        )
+        monkeypatch.setattr(ss_module.os, "fstat", lambda fd: _Foreign(real_fstat(fd)))
 
         assert ss_module.SecureMonarchSession()._load_token_file() is None
 
@@ -756,9 +773,7 @@ class TestCleanupOldSessionFiles:
         # expanduser("~") is redirected so the real implementation cannot reach
         # the developer's home; $HOME itself stays put (see isolate_real_home).
         fake_home = tmp_path / "home"  # already created by isolate_real_home
-        monkeypatch.setattr(
-            ss_module.os.path, "expanduser", lambda p: str(fake_home)
-        )
+        monkeypatch.setattr(ss_module.os.path, "expanduser", lambda p: str(fake_home))
 
         mm = tmp_path / ".mm"
         mm.mkdir()
@@ -799,7 +814,7 @@ class TestTokenDirSurvivesDeletion:
         assert not (store / "token").exists(), "token file should be gone"
         assert store.is_dir(), "token directory was removed"
         assert store.stat().st_ino == dir_inode, "directory was recreated, not kept"
-        assert _stat.S_IMODE(store.stat().st_mode) == 0o700
+        assert_owner_only_mode(store, 0o700)
 
     def test_delete_token_is_idempotent(self, tmp_path, monkeypatch):
         store = tmp_path / "store"
@@ -839,7 +854,7 @@ class TestEncryptionAtRest:
         monkeypatch.setattr(
             ss_module,
             "_dpapi_decrypt",
-            lambda s: s[len(ss_module._DPAPI_PREFIX):][::-1],
+            lambda s: s[len(ss_module._DPAPI_PREFIX) :][::-1],
         )
 
     @pytest.fixture
