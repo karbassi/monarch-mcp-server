@@ -676,6 +676,7 @@ async def update_transaction(
     date: Optional[str] = None,
     hide_from_reports: Optional[bool] = None,
     needs_review: Optional[bool] = None,
+    reviewed: Optional[bool] = None,
     notes: Optional[str] = None,
 ) -> str:
     """
@@ -690,6 +691,8 @@ async def update_transaction(
         date: New transaction date in YYYY-MM-DD format
         hide_from_reports: Whether to hide this transaction from reports
         needs_review: Whether this transaction needs review
+        reviewed: Set True to mark the transaction reviewed. To clear reviewed
+            status use needs_review=True instead -- these are separate fields
         notes: Notes for the transaction
     """
     try:
@@ -711,6 +714,8 @@ async def update_transaction(
             update_data["hide_from_reports"] = hide_from_reports
         if needs_review is not None:
             update_data["needs_review"] = needs_review
+        if reviewed is not None:
+            update_data["reviewed"] = reviewed
         if notes is not None:
             update_data["notes"] = notes
 
@@ -779,7 +784,7 @@ async def update_transaction_notes(
 @mcp.tool()
 async def mark_transaction_reviewed(transaction_id: str) -> str:
     """
-    Mark a transaction as reviewed (clears the needs_review flag).
+    Mark a transaction as reviewed (sets the transaction's reviewed status).
 
     Use this after reviewing a transaction that doesn't need category changes.
 
@@ -791,9 +796,13 @@ async def mark_transaction_reviewed(transaction_id: str) -> str:
     """
     try:
         client = await get_monarch_client()
+        # `reviewed` and `needs_review` are different fields upstream:
+        # needs_review -> needsReview, reviewed -> reviewed. Sending
+        # needs_review=False only clears the needs-review flag; it never sets
+        # reviewed status, so this tool used to do nothing it claimed to.
         result = await client.update_transaction(
             transaction_id=transaction_id,
-            needs_review=False,
+            reviewed=True,
         )
         return json_success(result)
     except Exception as e:

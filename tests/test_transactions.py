@@ -241,8 +241,17 @@ class TestMarkTransactionReviewed:
     """Tests for mark_transaction_reviewed tool."""
 
     @patch("monarch_mcp_server.tools.transactions.get_monarch_client")
-    async def test_mark_reviewed_success(self, mock_get_client):
-        """Test marking transaction as reviewed."""
+    async def test_mark_reviewed_sends_reviewed_not_needs_review(self, mock_get_client):
+        """Marking reviewed must send `reviewed`, not `needs_review=False`.
+
+        These are different fields in the upstream library, per its own
+        docstring for update_transaction: `needs_review` maps to the
+        GraphQL input `needsReview`, `reviewed` maps to `reviewed`, and
+        "to remove the reviewed status from a transaction, use
+        needs_review=True". So needs_review=False clears the needs-review
+        flag and never sets reviewed status -- the tool silently did nothing
+        it claimed to do.
+        """
         mock_client = AsyncMock()
         mock_client.update_transaction.return_value = {
             "updateTransaction": {
@@ -255,7 +264,8 @@ class TestMarkTransactionReviewed:
 
         call_kwargs = mock_client.update_transaction.call_args.kwargs
         assert call_kwargs["transaction_id"] == "txn_123"
-        assert call_kwargs["needs_review"] is False
+        assert call_kwargs.get("reviewed") is True
+        assert "needs_review" not in call_kwargs
 
         data = json.loads(result)
         assert "updateTransaction" in data
@@ -987,3 +997,29 @@ class TestCategorizeTransaction:
         mock_monarch_client.update_transaction.side_effect = Exception("boom")
         result = await categorize_transaction("txn-1", "cat-2")
         assert "categorize_transaction" in result
+
+
+class TestUpdateTransactionReviewedField:
+    """`reviewed` must reach the client as its own field, distinct from
+    needs_review -- see TestMarkTransactionReviewed for why they differ."""
+
+    @patch("monarch_mcp_server.tools.transactions.get_monarch_client")
+    async def test_reviewed_is_passed_through(self, mock_get_client):
+        mock_client = AsyncMock()
+        mock_client.update_transaction.return_value = {"updateTransaction": {}}
+        mock_get_client.return_value = mock_client
+
+        await update_transaction(transaction_id="txn_1", reviewed=True)
+
+        call_kwargs = mock_client.update_transaction.call_args.kwargs
+        assert call_kwargs["reviewed"] is True
+
+    @patch("monarch_mcp_server.tools.transactions.get_monarch_client")
+    async def test_reviewed_omitted_when_not_given(self, mock_get_client):
+        mock_client = AsyncMock()
+        mock_client.update_transaction.return_value = {"updateTransaction": {}}
+        mock_get_client.return_value = mock_client
+
+        await update_transaction(transaction_id="txn_1", notes="x")
+
+        assert "reviewed" not in mock_client.update_transaction.call_args.kwargs
