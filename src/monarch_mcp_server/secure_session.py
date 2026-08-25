@@ -271,10 +271,15 @@ class SecureMonarchSession:
         return token
 
     def _delete_token_file(self) -> None:
-        # missing_ok: the file may already be gone, and unlink() on a symlink
-        # removes the link rather than whatever it points at.
+        # Catch FileNotFoundError rather than passing missing_ok=True: both
+        # tolerate an absent file, but this way the success branch only runs
+        # when something was actually removed, so the log cannot claim a
+        # deletion that did not happen. unlink() on a symlink removes the link
+        # rather than whatever it points at.
         try:
-            _TOKEN_FILE.unlink(missing_ok=True)
+            _TOKEN_FILE.unlink()
+        except FileNotFoundError:
+            logger.debug(f"No token file to delete at {_TOKEN_FILE}")
         except OSError as e:
             logger.warning(f"⚠️  Could not delete {_TOKEN_FILE}: {e}")
         else:

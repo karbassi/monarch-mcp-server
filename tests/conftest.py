@@ -299,6 +299,12 @@ def load_script(path):
     saved = list(sys.path)
     try:
         spec = importlib.util.spec_from_file_location(pathlib.Path(path).stem, path)
+        if spec is None or spec.loader is None:
+            # spec_from_file_location returns None for a path it has no loader
+            # for -- an unrecognised extension, say. Reaching through that gives
+            # an opaque "NoneType has no attribute loader" instead of naming the
+            # file that could not be loaded.
+            raise ImportError(f"cannot load {path} as a Python module")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         yield module

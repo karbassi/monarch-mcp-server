@@ -928,3 +928,39 @@ class TestEncryptionAtRest:
         monkeypatch.setattr(ss_module, "_dpapi_decrypt", _boom)
 
         assert session._load_token_file() is None
+
+
+class TestDeleteLoggingIsAccurate:
+    """_delete_token_file must not claim it deleted a file that was not there.
+
+    unlink(missing_ok=True) never raises on a missing path, so an unguarded
+    `else` branch logs a deletion that did not happen -- which is actively
+    misleading when someone is reading logs to work out why a session was not
+    cleared.
+    """
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        store = tmp_path / "store"
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", store / "token")
+        return store
+
+    def test_logs_deletion_when_a_file_was_removed(self, store, caplog):
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("a-token")
+
+        with caplog.at_level("INFO", logger=ss_module.logger.name):
+            session._delete_token_file()
+
+        assert any("deleted" in r.message.lower() for r in caplog.records)
+
+    def test_does_not_claim_deletion_when_there_was_no_file(self, store, caplog):
+        store.mkdir()
+        session = ss_module.SecureMonarchSession()
+
+        with caplog.at_level("INFO", logger=ss_module.logger.name):
+            session._delete_token_file()
+
+        claimed = [r.message for r in caplog.records if "deleted" in r.message.lower()]
+        assert not claimed, f"claimed a deletion that did not happen: {claimed}"
