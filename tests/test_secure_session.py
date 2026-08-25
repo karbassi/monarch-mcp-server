@@ -17,6 +17,22 @@ from monarch_mcp_server.secure_session import _keyring_available
 _REAL_CLEANUP = ss_module.SecureMonarchSession._cleanup_old_session_files
 
 
+def assert_token_on_disk(path, expected):
+    """Assert what the token file holds, allowing for encryption at rest.
+
+    Where DPAPI is available the file holds a DPAPI blob rather than the
+    plaintext, so compare through the same decryption the loader performs.
+    Where it is not, the file is plaintext and compared directly -- so this
+    still fails if the implementation starts encrypting where it should not,
+    or stops where it should.
+    """
+    raw = path.read_text(encoding="utf-8")
+    if raw.startswith(ss_module._DPAPI_PREFIX):
+        assert ss_module._dpapi_decrypt(raw) == expected
+    else:
+        assert raw == expected
+
+
 def assert_owner_only_mode(path, expected):
     """Assert POSIX mode bits, but only where the platform enforces them.
 
@@ -427,7 +443,7 @@ class TestFileFallbackPermissions:
         session = ss_module.SecureMonarchSession()
         session._save_token_file("super-secret-token")
 
-        assert token_file.read_text() == "super-secret-token"
+        assert_token_on_disk(token_file, "super-secret-token")
         assert create_modes and all(m == 0o600 for m in create_modes)
         assert_owner_only_mode(token_file, 0o600)
 
@@ -477,7 +493,7 @@ class TestFileFallbackPermissions:
         session = ss_module.SecureMonarchSession()
         session._save_token_file("super-secret-token")
 
-        assert token_file.read_text() == "super-secret-token"
+        assert_token_on_disk(token_file, "super-secret-token")
         # Guard: an empty list would pass the all() below vacuously.
         assert modes_at_write, "token was never written"
         assert all(
@@ -598,7 +614,7 @@ class TestFileFallbackPermissions:
         session = ss_module.SecureMonarchSession()
         session._save_token_file("super-secret-token")
 
-        assert token_file.read_text() == "super-secret-token"
+        assert_token_on_disk(token_file, "super-secret-token")
         assert_owner_only_mode(token_file, 0o600)
 
 

@@ -69,3 +69,39 @@ class TestOwnerOnlyModeGate:
         f.chmod(0o644)  # wrong for POSIX, irrelevant on Windows
 
         mod.assert_owner_only_mode(f, 0o600)  # must not raise
+
+
+class TestTokenOnDiskAssertion:
+    """assert_token_on_disk must compare through encryption when it is in play.
+
+    Tests that read the token file directly would otherwise hard-assert
+    plaintext and fail on Windows+pywin32, where _save_token_file encrypts
+    before writing -- correct behaviour reported as a failure.
+    """
+
+    def test_compares_plaintext_when_not_encrypted(self, tmp_path):
+        import tests.test_secure_session as mod
+
+        f = tmp_path / "token"
+        f.write_text("a-token", encoding="utf-8")
+
+        mod.assert_token_on_disk(f, "a-token")  # must not raise
+        with pytest.raises(AssertionError):
+            mod.assert_token_on_disk(f, "something-else")
+
+    def test_compares_through_decryption_when_encrypted(self, tmp_path, monkeypatch):
+        import monarch_mcp_server.secure_session as ss
+        import tests.test_secure_session as mod
+
+        monkeypatch.setattr(
+            ss, "_dpapi_decrypt", lambda s: s[len(ss._DPAPI_PREFIX) :][::-1]
+        )
+        f = tmp_path / "token"
+        f.write_text(ss._DPAPI_PREFIX + "a-token"[::-1], encoding="utf-8")
+
+        # The plaintext is not on disk...
+        assert "a-token" not in f.read_text(encoding="utf-8")
+        # ...but the assertion still recognises it.
+        mod.assert_token_on_disk(f, "a-token")
+        with pytest.raises(AssertionError):
+            mod.assert_token_on_disk(f, "something-else")
