@@ -195,12 +195,19 @@ class SecureMonarchSession:
         return None
 
     def _delete_token_file(self) -> None:
-        if _TOKEN_FILE.is_file():
-            _TOKEN_FILE.unlink()
+        # missing_ok: the file may already be gone, and unlink() on a symlink
+        # removes the link rather than whatever it points at.
+        try:
+            _TOKEN_FILE.unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning(f"⚠️  Could not delete {_TOKEN_FILE}: {e}")
+        else:
             logger.info(f"🗑️ Token file deleted: {_TOKEN_FILE}")
-        # Remove directory if empty
-        if _TOKEN_DIR.is_dir() and not list(_TOKEN_DIR.iterdir()):
-            _TOKEN_DIR.rmdir()
+        # The directory is deliberately left in place. It is the 0700 container
+        # the token lives in; removing it discards that boundary and makes the
+        # next save recreate the path, which hands anything able to write to
+        # $HOME another chance to win the race between _assert_token_dir_safe()
+        # and mkdir() by pre-creating it as a symlink or a permissive directory.
 
     # -- public API ----------------------------------------------------------
 

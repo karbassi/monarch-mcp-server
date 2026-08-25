@@ -769,3 +769,45 @@ class TestCleanupOldSessionFiles:
 
         assert not pickle.exists(), "CWD-relative session pickle was not cleaned up"
         assert not mm.exists(), "emptied .mm directory was not removed"
+
+
+class TestTokenDirSurvivesDeletion:
+    """Deleting the token must not delete the directory holding it.
+
+    The directory is the 0700 container the token lives inside. Removing it on
+    logout throws that boundary away and forces the next save to recreate it --
+    and _assert_token_dir_safe()'s is_symlink() check runs *before* mkdir, so
+    anything that can write to $HOME gets a fresh chance to win that race and
+    pre-create the path as a symlink or a world-writable directory. Keeping the
+    directory means the boundary is established once and persists.
+    """
+
+    def test_delete_token_file_keeps_the_directory(self, tmp_path, monkeypatch):
+        import stat as _stat
+
+        store = tmp_path / "store"
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", store / "token")
+
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("a-token")
+        assert (store / "token").exists()
+        dir_inode = store.stat().st_ino
+
+        session._delete_token_file()
+
+        assert not (store / "token").exists(), "token file should be gone"
+        assert store.is_dir(), "token directory was removed"
+        assert store.stat().st_ino == dir_inode, "directory was recreated, not kept"
+        assert _stat.S_IMODE(store.stat().st_mode) == 0o700
+
+    def test_delete_token_is_idempotent(self, tmp_path, monkeypatch):
+        store = tmp_path / "store"
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", store / "token")
+
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("a-token")
+        session._delete_token_file()
+        session._delete_token_file()  # must not raise on an already-clean dir
+        assert store.is_dir()
