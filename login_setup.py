@@ -14,6 +14,7 @@ Supports three auth paths in order of recommendation:
 
 import asyncio
 import getpass
+import os
 import sys
 from pathlib import Path
 
@@ -30,6 +31,50 @@ from monarch_mcp_server.monarch_auth import (
 from monarch_mcp_server.secure_session import secure_session
 
 
+# Terminals read in canonical mode, where the line buffer is capped at
+# MAX_CANON -- 1024 bytes on macOS. A raw `cookie:` header from app.monarch.com
+# routinely exceeds that once Cloudflare and analytics cookies are in play, so
+# the paste is silently truncated and the login fails with nothing to explain
+# why. Query the tty when we can; 1024 is the POSIX floor otherwise.
+def _canonical_limit() -> int:
+    try:
+        return int(os.pathconf("/dev/tty", "PC_MAX_CANON"))
+    except (OSError, ValueError, AttributeError):
+        return 1024
+
+
+_CANONICAL_LIMIT = _canonical_limit()
+
+
+class CookieInputTruncated(RuntimeError):
+    """The pasted cookie hit the terminal's line limit and was cut off."""
+
+
+def _read_cookie_string() -> str:
+    """Read the browser cookie header, preferring paths that bypass the tty.
+
+    MONARCH_COOKIE, then MONARCH_COOKIE_FILE, then an interactive prompt. The
+    first two exist so a header longer than MAX_CANON can be supplied at all.
+    """
+    from_env = os.environ.get("MONARCH_COOKIE")
+    if from_env and from_env.strip():
+        return from_env.strip()
+
+    path = os.environ.get("MONARCH_COOKIE_FILE")
+    if path and path.strip():
+        return Path(path.strip()).read_text(encoding="utf-8").strip()
+
+    value = getpass.getpass("Paste the Cookie header value: ").strip()
+    if len(value) >= _CANONICAL_LIMIT:
+        raise CookieInputTruncated(
+            f"The pasted value is {len(value)} bytes, at or over this "
+            f"terminal's {_CANONICAL_LIMIT}-byte line limit, so it was almost "
+            "certainly cut off. Write the header to a file and set "
+            "MONARCH_COOKIE_FILE=/path/to/file (or MONARCH_COOKIE=...) instead."
+        )
+    return value
+
+
 async def _login_with_cookies():
     print("\n📋 To copy the right cookie string:")
     print("  1. Log in to https://app.monarch.com in Chrome or Firefox")
@@ -39,7 +84,18 @@ async def _login_with_cookies():
     print("  4. Scroll to 'Request Headers' and find the 'cookie:' header")
     print("  5. Copy the full value (a long string of key=value; pairs)")
     print()
-    cookie_string = getpass.getpass("Paste the Cookie header value: ").strip()
+    print("  (If the header is long, save it to a file and set")
+    print("   MONARCH_COOKIE_FILE=/path/to/file -- terminals truncate")
+    print("   pastes at the MAX_CANON line limit.)")
+    print()
+    try:
+        cookie_string = _read_cookie_string()
+    except CookieInputTruncated as e:
+        print(f"❌ {e}")
+        return None
+    except OSError as e:
+        print(f"❌ Could not read the cookie: {e}")
+        return None
     if not cookie_string:
         print("❌ No cookie string provided. Exiting.")
         return None
