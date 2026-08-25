@@ -48,9 +48,9 @@ def _requirements_txt() -> list[str]:
 )
 def test_mcp_constraint_excludes_releases_without_fastmcp(source):
     spec = _declared("mcp", source()).specifier
-    assert spec.contains(MCP_RUNNABLE), (
-        f"constraint rejects mcp {MCP_RUNNABLE}, which the server runs on"
-    )
+    assert spec.contains(
+        MCP_RUNNABLE
+    ), f"constraint rejects mcp {MCP_RUNNABLE}, which the server runs on"
     assert not spec.contains(MCP_BROKEN), (
         f"constraint admits mcp {MCP_BROKEN}, which has no mcp.server.fastmcp; "
         "a fresh install would resolve to a server that cannot start"
@@ -63,17 +63,25 @@ def test_mcp_constraint_excludes_releases_without_fastmcp(source):
 # Database, not from the constraint under test.
 VULNERABLE_TRANSITIVES = [
     pytest.param(
-        "idna", "3.10", "GHSA-65pc-fj4g-8rjx", "3.15",
+        "idna",
+        "3.10",
+        "GHSA-65pc-fj4g-8rjx",
+        "3.15",
         id="idna-GHSA-65pc-fj4g-8rjx",
     ),
     pytest.param(
-        "aiohttp", "3.14.1", "GHSA-cq5v-8q36-5273", "3.14.3",
+        "aiohttp",
+        "3.14.1",
+        "GHSA-cq5v-8q36-5273",
+        "3.14.3",
         id="aiohttp-GHSA-cq5v-8q36-5273",
     ),
 ]
 
 
-@pytest.mark.parametrize("package, vulnerable, advisory, patched", VULNERABLE_TRANSITIVES)
+@pytest.mark.parametrize(
+    "package, vulnerable, advisory, patched", VULNERABLE_TRANSITIVES
+)
 @pytest.mark.parametrize(
     "source",
     [
@@ -89,6 +97,6 @@ def test_vulnerable_transitive_versions_are_excluded(
         f"constraint admits {package} {vulnerable}, which is affected by "
         f"{advisory} (first patched: {patched})"
     )
-    assert spec.contains(patched), (
-        f"constraint rejects {package} {patched}, the first patched release"
-    )
+    assert spec.contains(
+        patched
+    ), f"constraint rejects {package} {patched}, the first patched release"

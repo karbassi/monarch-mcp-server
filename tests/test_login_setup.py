@@ -63,9 +63,9 @@ def test_existing_session_survives_an_abandoned_login(
 
     asyncio.run(login_setup.main())
 
-    assert "delete_token" not in spy_session, (
-        f"session was cleared after {why}, leaving the user with nothing"
-    )
+    assert (
+        "delete_token" not in spy_session
+    ), f"session was cleared after {why}, leaving the user with nothing"
     assert "save" not in spy_session
 
 

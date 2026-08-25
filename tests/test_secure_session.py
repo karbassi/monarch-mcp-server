@@ -811,3 +811,89 @@ class TestTokenDirSurvivesDeletion:
         session._delete_token_file()
         session._delete_token_file()  # must not raise on an already-clean dir
         assert store.is_dir()
+
+
+class TestEncryptionAtRest:
+    """The file fallback should encrypt at rest where the platform can.
+
+    On Windows the 0600/0700 mode bits this module sets are inert -- Windows
+    honours only the read-only attribute -- and fchmod/O_NOFOLLOW do not exist,
+    so the hardening in #1 degrades to almost nothing there. DPAPI is the
+    primitive that platform actually provides.
+
+    The win32crypt calls cannot run here, so these tests exercise the plumbing
+    around them: the availability gate, the prefix, the round trip, and the
+    transparent migration of an existing plaintext file.
+    """
+
+    @pytest.fixture
+    def fake_dpapi(self, monkeypatch):
+        """Stand in for CryptProtectData/CryptUnprotectData with a reversible
+        transform, so the wiring is testable off-Windows."""
+        monkeypatch.setattr(ss_module, "_dpapi_available", lambda: True)
+        monkeypatch.setattr(
+            ss_module,
+            "_dpapi_encrypt",
+            lambda s: ss_module._DPAPI_PREFIX + s[::-1],
+        )
+        monkeypatch.setattr(
+            ss_module,
+            "_dpapi_decrypt",
+            lambda s: s[len(ss_module._DPAPI_PREFIX):][::-1],
+        )
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        store = tmp_path / "store"
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", store / "token")
+        return store
+
+    def test_dpapi_is_unavailable_off_windows(self):
+        import sys as _sys
+
+        if _sys.platform != "win32":
+            assert ss_module._dpapi_available() is False
+
+    def test_token_is_not_plaintext_on_disk_when_available(self, store, fake_dpapi):
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("super-secret-token")
+
+        on_disk = (store / "token").read_text(encoding="utf-8")
+        assert "super-secret-token" not in on_disk
+        assert on_disk.startswith(ss_module._DPAPI_PREFIX)
+
+    def test_round_trip_through_encryption(self, store, fake_dpapi):
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("super-secret-token")
+        assert session._load_token_file() == "super-secret-token"
+
+    def test_plaintext_stays_plaintext_when_unavailable(self, store, monkeypatch):
+        monkeypatch.setattr(ss_module, "_dpapi_available", lambda: False)
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("super-secret-token")
+        assert (store / "token").read_text(encoding="utf-8") == "super-secret-token"
+        assert session._load_token_file() == "super-secret-token"
+
+    def test_existing_plaintext_file_still_loads_and_is_migrated(
+        self, store, fake_dpapi
+    ):
+        store.mkdir()
+        (store / "token").write_text("legacy-plaintext", encoding="utf-8")
+
+        session = ss_module.SecureMonarchSession()
+        assert session._load_token_file() == "legacy-plaintext"
+
+        migrated = (store / "token").read_text(encoding="utf-8")
+        assert migrated.startswith(ss_module._DPAPI_PREFIX)
+        assert "legacy-plaintext" not in migrated
+
+    def test_undecryptable_payload_returns_none(self, store, monkeypatch, fake_dpapi):
+        def _boom(_s):
+            raise OSError("wrong user or machine")
+
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("super-secret-token")
+        monkeypatch.setattr(ss_module, "_dpapi_decrypt", _boom)
+
+        assert session._load_token_file() is None

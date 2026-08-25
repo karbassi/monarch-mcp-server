@@ -5,10 +5,12 @@ Uses the system keyring when available, with an automatic file-based
 fallback for environments without a keyring backend (e.g. WSL, headless Linux).
 """
 
+import base64
 import json
 import logging
 import os
 import stat
+import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 from monarchmoney import MonarchMoney
@@ -34,6 +36,55 @@ _MAX_TOKEN_BYTES = 64 * 1024
 
 
 _PROBE_USERNAME = "__keyring_probe__"
+
+
+# --- Encryption at rest for the file fallback -------------------------------
+#
+# On Windows the 0600/0700 mode bits set below are inert -- the platform honours
+# only the read-only attribute -- and neither os.fchmod nor O_NOFOLLOW exists,
+# so the path hardening degrades to a best-effort symlink check. DPAPI
+# (CryptProtectData) is the protection Windows actually offers: per-user, and
+# without Credential Manager's size cap on the blob, which is why a full cookie
+# session ends up in this file in the first place.
+#
+# Elsewhere this is a no-op and the file stays plaintext, still guarded by the
+# 0600 file and 0700 directory.
+_DPAPI_PREFIX = "DPAPI:"
+
+
+def _dpapi_available() -> bool:
+    """True only on Windows with pywin32's win32crypt importable."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import win32crypt  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def _dpapi_encrypt(plaintext: str) -> str:
+    """Encrypt with DPAPI, returning ``DPAPI:<base64>``."""
+    import win32crypt
+
+    blob = win32crypt.CryptProtectData(
+        plaintext.encode("utf-8"),
+        "monarch-mcp-server session",  # description, not secret
+        None,
+        None,
+        None,
+        0,
+    )
+    return _DPAPI_PREFIX + base64.b64encode(blob).decode("ascii")
+
+
+def _dpapi_decrypt(payload: str) -> str:
+    """Reverse :func:`_dpapi_encrypt`."""
+    import win32crypt
+
+    raw = base64.b64decode(payload[len(_DPAPI_PREFIX) :])
+    _description, data = win32crypt.CryptUnprotectData(raw, None, None, None, 0)
+    return data.decode("utf-8")
 
 
 def _keyring_available() -> bool:
@@ -90,6 +141,10 @@ class SecureMonarchSession:
             raise OSError(f"{_TOKEN_DIR} is a symlink; refusing to use it")
 
     def _save_token_file(self, token: str) -> None:
+        # Encrypt before anything touches the filesystem, so the plaintext never
+        # reaches the file even transiently.
+        if _dpapi_available():
+            token = _dpapi_encrypt(token)
         self._assert_token_dir_safe()
         _TOKEN_DIR.mkdir(parents=True, exist_ok=True)
         _TOKEN_DIR.chmod(stat.S_IRWXU)  # 700
@@ -189,10 +244,31 @@ class SecureMonarchSession:
             logger.warning(f"⚠️  {_TOKEN_FILE} is larger than a session blob; refusing to read")
             return None
         token = token.strip()
-        if token:
-            logger.info(f"✅ Token loaded from {_TOKEN_FILE}")
-            return token
-        return None
+        if not token:
+            return None
+
+        if token.startswith(_DPAPI_PREFIX):
+            try:
+                plaintext = _dpapi_decrypt(token)
+            except Exception as e:
+                # Wrong user, wrong machine, or a corrupt blob. Refusing beats
+                # handing a mangled value to the caller, which would be sent
+                # upstream as a credential.
+                logger.warning(f"⚠️  Could not decrypt {_TOKEN_FILE}: {e}")
+                return None
+            logger.info(f"✅ Token loaded (encrypted at rest) from {_TOKEN_FILE}")
+            return plaintext
+
+        logger.info(f"✅ Token loaded from {_TOKEN_FILE}")
+        if _dpapi_available():
+            # Upgrade a file written before encryption was available. Failure
+            # here is not fatal: the value we already read is still good.
+            try:
+                self._save_token_file(token)
+                logger.info("🔐 Migrated the token file to encrypted at rest")
+            except Exception as e:
+                logger.warning(f"⚠️  Could not migrate {_TOKEN_FILE}: {e}")
+        return token
 
     def _delete_token_file(self) -> None:
         # missing_ok: the file may already be gone, and unlink() on a symlink

@@ -17,9 +17,7 @@ def stored_session(monkeypatch):
     """Make secure_session report a caller-supplied stored session."""
 
     def _install(session):
-        monkeypatch.setattr(
-            auth_tools.secure_session, "load_session", lambda: session
-        )
+        monkeypatch.setattr(auth_tools.secure_session, "load_session", lambda: session)
         monkeypatch.setattr(
             auth_tools.secure_session,
             "load_token",
