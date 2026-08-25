@@ -140,7 +140,9 @@ def _currency_from_text(text: Any) -> Optional[str]:
     return None
 
 
-def _currency_from_transaction(txn: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+def _currency_from_transaction(
+    txn: Dict[str, Any],
+) -> tuple[Optional[str], Optional[str]]:
     """Resolve a transaction's currency and the source of that value.
 
     Returns ``(currency, source)`` where source is one of:
@@ -693,9 +695,26 @@ async def update_transaction(
         needs_review: Whether this transaction needs review
         reviewed: Set True to mark the transaction reviewed. To clear reviewed
             status, use needs_review=True instead -- these are separate fields
+            and cannot be combined in one call
         notes: Notes for the transaction
     """
     try:
+        # `reviewed` and `needs_review` are opposing intents on the same status,
+        # so refuse a request that expresses both -- or that asks for
+        # reviewed=False, which has no documented meaning upstream (the library
+        # clears reviewed status via needs_review=True). Better to reject than
+        # to send a contradiction and report success.
+        if reviewed is not None and needs_review is not None:
+            raise ValueError(
+                "Pass either reviewed or needs_review, not both: they set the "
+                "same status in opposite directions."
+            )
+        if reviewed is False:
+            raise ValueError(
+                "reviewed=False is not meaningful; to clear reviewed status "
+                "pass needs_review=True instead."
+            )
+
         client = await get_monarch_client()
 
         update_data: Dict[str, Any] = {"transaction_id": transaction_id}
@@ -834,13 +853,15 @@ async def bulk_categorize_transactions(
     """
     try:
         if dry_run:
-            return json_success({
-                "dry_run": True,
-                "total": len(transaction_ids),
-                "transaction_ids": list(transaction_ids),
-                "category_id": category_id,
-                "mark_reviewed": mark_reviewed,
-            })
+            return json_success(
+                {
+                    "dry_run": True,
+                    "total": len(transaction_ids),
+                    "transaction_ids": list(transaction_ids),
+                    "category_id": category_id,
+                    "mark_reviewed": mark_reviewed,
+                }
+            )
 
         client = await get_monarch_client()
 
