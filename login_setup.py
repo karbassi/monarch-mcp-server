@@ -125,9 +125,14 @@ async def main():
         print(f"⚠️  Could not check version: {e}")
 
     try:
-        secure_session.delete_token()
-        print("🗑️ Cleared existing secure sessions")
-
+        # Deliberately NOT clearing the stored session here. There are five
+        # return paths between this point and save_authenticated_session below
+        # (bad menu choice, login helper returning None, unexpected accounts
+        # payload, failed connection test, failed save) and clearing up front
+        # meant hitting any of them left the user with no session at all.
+        # The clear was redundant anyway: a save replaces the keyring entry
+        # outright and opens the fallback file O_TRUNC, so nothing stale
+        # survives it.
         print("\nHow do you sign in to Monarch Money?")
         print(
             "  1) Session cookies from browser   "
