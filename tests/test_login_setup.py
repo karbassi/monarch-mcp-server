@@ -7,26 +7,8 @@ failed save. Hitting any of them left the user with no session at all.
 """
 
 import asyncio
-import importlib.util
-from pathlib import Path
 
 import pytest
-
-_ROOT = Path(__file__).resolve().parent.parent
-
-
-def _load_login_setup():
-    spec = importlib.util.spec_from_file_location(
-        "login_setup", _ROOT / "login_setup.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-@pytest.fixture
-def login_setup():
-    return _load_login_setup()
 
 
 @pytest.fixture

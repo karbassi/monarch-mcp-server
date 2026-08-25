@@ -22,6 +22,7 @@ src_path = Path(__file__).parent / "src"
 sys.path.insert(0, str(src_path))
 
 from monarchmoney import CaptchaRequiredException, RequireMFAException
+
 from monarch_mcp_server.monarch_auth import (
     EmailOtpRequiredException,
     create_monarch_client,
@@ -92,6 +93,15 @@ async def _login_with_cookies():
         cookie_string = _read_cookie_string()
     except CookieInputTruncated as e:
         print(f"❌ {e}")
+        return None
+    except UnicodeDecodeError as e:
+        # Not an OSError -- UnicodeDecodeError is a ValueError -- so it needs
+        # its own arm or it escapes as a traceback out of a user-facing script.
+        print(
+            f"❌ MONARCH_COOKIE_FILE is not valid UTF-8 "
+            f"({e.reason} at byte {e.start}). A cookie header is ASCII; this "
+            "file is probably not the plain header text."
+        )
         return None
     except OSError as e:
         print(f"❌ Could not read the cookie: {e}")
@@ -173,6 +183,7 @@ async def main():
 
     try:
         import monarchmoney
+
         print(
             f"📦 MonarchMoney version: "
             f"{getattr(monarchmoney, '__version__', 'unknown')}"

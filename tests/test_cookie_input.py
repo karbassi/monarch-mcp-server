@@ -6,22 +6,7 @@ routinely exceeds that once Cloudflare and analytics cookies are included, so
 the paste is silently truncated and login fails with no useful explanation.
 """
 
-import importlib.util
-from pathlib import Path
-
 import pytest
-
-_ROOT = Path(__file__).resolve().parent.parent
-
-
-@pytest.fixture
-def login_setup():
-    spec = importlib.util.spec_from_file_location(
-        "login_setup", _ROOT / "login_setup.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 @pytest.fixture
@@ -74,3 +59,23 @@ def test_flags_a_value_truncated_at_the_canonical_limit(monkeypatch, login_setup
         login_setup._read_cookie_string()
 
     assert "MONARCH_COOKIE_FILE" in str(excinfo.value)
+
+
+def test_non_utf8_cookie_file_is_reported_not_raised(
+    monkeypatch, login_setup, tmp_path
+):
+    """A cookie file that is not valid UTF-8 must produce a user-facing error.
+
+    _read_cookie_string reads with encoding="utf-8", which raises
+    UnicodeDecodeError -- a ValueError, not an OSError -- so catching only
+    OSError lets it escape as a traceback out of a user-facing script.
+    """
+    import asyncio
+
+    f = tmp_path / "cookie.bin"
+    f.write_bytes(b"session=\xff\xfe not utf-8")
+    monkeypatch.delenv("MONARCH_COOKIE", raising=False)
+    monkeypatch.setenv("MONARCH_COOKIE_FILE", str(f))
+
+    # Must not raise; the script reports and returns None.
+    assert asyncio.run(login_setup._login_with_cookies()) is None

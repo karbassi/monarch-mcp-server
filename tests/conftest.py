@@ -1,6 +1,9 @@
 """Shared test fixtures for Monarch MCP Server tests."""
 
+import contextlib
+import importlib.util
 import json
+import pathlib
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -282,3 +285,31 @@ def patch_monarch_client(mock_monarch_client):
     finally:
         for p in patchers:
             p.stop()
+
+
+@contextlib.contextmanager
+def load_script(path):
+    """Import a standalone script by path, leaving sys.path as we found it.
+
+    login_setup.py is a script, not a package member, so it has to be loaded
+    this way. Executing it runs `sys.path.insert(0, .../src)` at module scope,
+    and that insert is unconditional -- so loading it once per test grows
+    sys.path without bound and can make unrelated tests order-dependent.
+    """
+    saved = list(sys.path)
+    try:
+        spec = importlib.util.spec_from_file_location(pathlib.Path(path).stem, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        yield module
+    finally:
+        sys.path[:] = saved
+
+
+LOGIN_SETUP = pathlib.Path(__file__).resolve().parent.parent / "login_setup.py"
+
+
+@pytest.fixture
+def login_setup():
+    with load_script(LOGIN_SETUP) as module:
+        yield module
