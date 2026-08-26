@@ -5,6 +5,7 @@ import importlib.util
 import json
 import pathlib
 import sys
+from copy import deepcopy
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Mock the monarchmoney module before any monarch_mcp_server imports
@@ -337,10 +338,16 @@ def mock_monarch_client():
 
     client.upload_account_balance_history.return_value = True
 
-    client.get_institutions.return_value = _INSTITUTIONS_RESPONSE
-    client.get_credit_history.return_value = _CREDIT_HISTORY_RESPONSE
-    client.get_recent_account_balances.return_value = _RECENT_BALANCES_RESPONSE
-    client.find_duplicate_transactions.return_value = _DUPLICATES_RESPONSE
+    # deepcopy per test: these are module-level literals, so handing the same
+    # object graph to every test lets one test's mutation leak into the next.
+    # The dicts above this point are built inline in the fixture body and are
+    # already fresh each call; only these four needed it.
+    client.get_institutions.return_value = deepcopy(_INSTITUTIONS_RESPONSE)
+    client.get_credit_history.return_value = deepcopy(_CREDIT_HISTORY_RESPONSE)
+    client.get_recent_account_balances.return_value = deepcopy(
+        _RECENT_BALANCES_RESPONSE
+    )
+    client.find_duplicate_transactions.return_value = deepcopy(_DUPLICATES_RESPONSE)
 
     return client
 
