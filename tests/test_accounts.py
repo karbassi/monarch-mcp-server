@@ -3,10 +3,10 @@
 import json
 
 from monarch_mcp_server.tools.accounts import (
-    get_accounts,
-    get_account_holdings,
-    refresh_accounts,
     get_account_balance_history,
+    get_account_holdings,
+    get_accounts,
+    refresh_accounts,
     upload_account_balance_history,
 )
 
@@ -184,17 +184,13 @@ class TestUploadAccountBalanceHistory:
         mock_monarch_client.upload_account_balance_history.assert_not_called()
 
     async def test_rejects_invalid_json(self, mock_monarch_client):
-        result = json.loads(
-            await upload_account_balance_history("12345", "not json")
-        )
+        result = json.loads(await upload_account_balance_history("12345", "not json"))
         assert result["error"] is True
         assert "valid JSON" in result["message"]
         mock_monarch_client.get_account_history.assert_not_called()
 
     async def test_rejects_non_object(self, mock_monarch_client):
-        result = json.loads(
-            await upload_account_balance_history("12345", "[1, 2, 3]")
-        )
+        result = json.loads(await upload_account_balance_history("12345", "[1, 2, 3]"))
         assert result["error"] is True
         assert "JSON object" in result["message"]
         mock_monarch_client.get_account_history.assert_not_called()
@@ -219,3 +215,33 @@ class TestUploadAccountBalanceHistory:
         mock_monarch_client.get_account_history.side_effect = Exception("Timeout")
         result = await upload_account_balance_history("12345", '{"2026-04-21": 0}')
         assert "upload_account_balance_history" in result
+
+
+class TestAccountSubtypeAndNetWorthFields:
+    """The AccountFields fragment already fetches these; get_accounts dropped them.
+
+    Without them a caller cannot tell a Roth IRA from a taxable brokerage, or see
+    which accounts Monarch excludes from net worth, without dropping to raw
+    GraphQL. Live measurements supporting that live in the PR, deliberately not
+    here -- an account count in a unit-test docstring goes stale and misleads.
+    """
+
+    async def test_subtype_mask_and_flags_are_passed_through(self):
+        result = json.loads(await get_accounts())
+        acc = result[0]
+        assert acc["subtype"] == "roth_ira"
+        assert acc["subtype_display"] == "Roth IRA"
+        assert acc["mask"] == "4321"
+        assert acc["hide_from_list"] is True
+        assert acc["include_in_net_worth"] is False
+
+    async def test_absent_fields_degrade_without_raising(self):
+        """An account payload lacking them must still serialise -- these come from
+        an upstream fragment that may not always populate every field."""
+        result = json.loads(await get_accounts())
+        acc = result[1]
+        assert acc["subtype"] is None
+        assert acc["subtype_display"] is None
+        assert acc["mask"] is None
+        assert acc["hide_from_list"] is False
+        assert acc["include_in_net_worth"] is None

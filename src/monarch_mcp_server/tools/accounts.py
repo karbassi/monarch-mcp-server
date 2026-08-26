@@ -10,7 +10,7 @@ from pydantic import RootModel, ValidationError
 
 from monarch_mcp_server.app import mcp
 from monarch_mcp_server.client import get_monarch_client
-from monarch_mcp_server.helpers import json_success, json_error
+from monarch_mcp_server.helpers import json_error, json_success
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,9 @@ async def get_accounts() -> str:
                 "id": account.get("id"),
                 "name": account.get("displayName") or account.get("name"),
                 "type": (account.get("type") or {}).get("name"),
+                "subtype": (account.get("subtype") or {}).get("name"),
+                "subtype_display": (account.get("subtype") or {}).get("display"),
+                "mask": account.get("mask"),
                 "balance": account.get("currentBalance"),
                 "current_balance": account.get("currentBalance"),
                 "display_balance": account.get("displayBalance"),
@@ -44,6 +47,8 @@ async def get_accounts() -> str:
                 if "isActive" in account
                 else not account.get("deactivatedAt"),
                 "is_hidden": account.get("isHidden", False),
+                "hide_from_list": account.get("hideFromList", False),
+                "include_in_net_worth": account.get("includeInNetWorth"),
             }
             account_list.append(account_info)
 
