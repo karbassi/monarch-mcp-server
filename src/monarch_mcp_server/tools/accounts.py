@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import RootModel, ValidationError
 
@@ -43,9 +43,11 @@ async def get_accounts() -> str:
                 "current_balance": account.get("currentBalance"),
                 "display_balance": account.get("displayBalance"),
                 "institution": (account.get("institution") or {}).get("name"),
-                "is_active": account.get("isActive")
-                if "isActive" in account
-                else not account.get("deactivatedAt"),
+                "is_active": (
+                    account.get("isActive")
+                    if "isActive" in account
+                    else not account.get("deactivatedAt")
+                ),
                 "is_hidden": account.get("isHidden", False),
                 "hide_from_list": account.get("hideFromList", False),
                 "include_in_net_worth": account.get("includeInNetWorth"),
@@ -127,23 +129,31 @@ async def get_account_balance_history(account_id: str) -> str:
         formatted = {
             "account_id": account_id,
             "snapshot_count": len(snapshots),
-            "snapshots": []
+            "snapshots": [],
         }
 
         if snapshots:
-            balances = [s.get("signedBalance", 0) for s in snapshots if s.get("signedBalance") is not None]
+            balances = [
+                s.get("signedBalance", 0)
+                for s in snapshots
+                if s.get("signedBalance") is not None
+            ]
             if balances:
                 formatted["current_balance"] = balances[-1] if balances else 0
                 formatted["earliest_balance"] = balances[0] if balances else 0
-                formatted["change"] = balances[-1] - balances[0] if len(balances) > 1 else 0
+                formatted["change"] = (
+                    balances[-1] - balances[0] if len(balances) > 1 else 0
+                )
                 formatted["highest"] = max(balances)
                 formatted["lowest"] = min(balances)
 
         for snapshot in snapshots:
-            formatted["snapshots"].append({
-                "date": snapshot.get("date"),
-                "balance": snapshot.get("signedBalance"),
-            })
+            formatted["snapshots"].append(
+                {
+                    "date": snapshot.get("date"),
+                    "balance": snapshot.get("signedBalance"),
+                }
+            )
 
         return json_success(formatted)
     except Exception as e:
@@ -183,7 +193,9 @@ async def upload_account_balance_history(
         if not isinstance(raw, dict):
             return json_error(
                 "upload_account_balance_history",
-                ValueError("corrections must be a JSON object mapping dates to numbers"),
+                ValueError(
+                    "corrections must be a JSON object mapping dates to numbers"
+                ),
             )
 
         try:
@@ -196,10 +208,12 @@ async def upload_account_balance_history(
         }
 
         if not date_to_balance:
-            return json_success({
-                "updated": False,
-                "message": "No corrections provided",
-            })
+            return json_success(
+                {
+                    "updated": False,
+                    "message": "No corrections provided",
+                }
+            )
 
         from monarchmoney.monarchmoney import BalanceHistoryRow
 
@@ -220,38 +234,140 @@ async def upload_account_balance_history(
                 balance = float(date_to_balance[date_str])
                 applied.append(date_str)
 
-            rows.append(BalanceHistoryRow(
-                date=datetime.strptime(date_str, "%Y-%m-%d"),
-                amount=balance,
-                account_name=account_name,
-            ))
+            rows.append(
+                BalanceHistoryRow(
+                    date=datetime.strptime(date_str, "%Y-%m-%d"),
+                    amount=balance,
+                    account_name=account_name,
+                )
+            )
 
         if not applied:
-            return json_success({
-                "updated": False,
-                "message": "No matching dates found in history",
-                "unmatched_dates": unmatched,
-            })
+            return json_success(
+                {
+                    "updated": False,
+                    "message": "No matching dates found in history",
+                    "unmatched_dates": unmatched,
+                }
+            )
 
         if dry_run:
-            return json_success({
-                "dry_run": True,
-                "account_id": account_id,
-                "dates_to_correct": applied,
-                "unmatched_dates": unmatched,
-                "total_snapshots": len(rows),
-            })
+            return json_success(
+                {
+                    "dry_run": True,
+                    "account_id": account_id,
+                    "dates_to_correct": applied,
+                    "unmatched_dates": unmatched,
+                    "total_snapshots": len(rows),
+                }
+            )
 
         result = await client.upload_account_balance_history(
             account_id=account_id,
             csv_content=rows,
         )
 
-        return json_success({
-            "updated": result,
-            "dates_corrected": applied,
-            "unmatched_dates": unmatched,
-            "total_snapshots": len(rows),
-        })
+        return json_success(
+            {
+                "updated": result,
+                "dates_corrected": applied,
+                "unmatched_dates": unmatched,
+                "total_snapshots": len(rows),
+            }
+        )
     except Exception as e:
         return json_error("upload_account_balance_history", e)
+
+
+@mcp.tool()
+async def get_institutions() -> str:
+    """
+    Get connected institutions and the health of each connection.
+
+    Surfaces which links Monarch can no longer refresh -- the usual cause of
+    balances silently going stale -- alongside the accounts behind each one.
+
+    Returns:
+        Per-credential connection status, plus a summary of how many need
+        attention.
+    """
+    try:
+        client = await get_monarch_client()
+        data = await client.get_institutions()
+
+        accounts_by_credential: Dict[str, List[Dict[str, Any]]] = {}
+        for account in data.get("accounts") or []:
+            if account.get("deletedAt"):
+                continue
+            credential = account.get("credential") or {}
+            key = credential.get("id") or "__manual__"
+            accounts_by_credential.setdefault(key, []).append(
+                {
+                    "id": account.get("id"),
+                    "name": account.get("displayName"),
+                    "mask": account.get("mask"),
+                    "subtype": (account.get("subtype") or {}).get("display")
+                    or (account.get("subtype") or {}).get("name"),
+                }
+            )
+
+        connections = []
+        for credential in data.get("credentials") or []:
+            disconnected_at = credential.get("disconnectedFromDataProviderAt")
+            update_required = bool(credential.get("updateRequired"))
+            connections.append(
+                {
+                    "credential_id": credential.get("id"),
+                    "institution": (credential.get("institution") or {}).get("name"),
+                    "data_provider": credential.get("dataProvider"),
+                    "last_updated": credential.get("displayLastUpdatedAt"),
+                    "update_required": update_required,
+                    "disconnected_at": disconnected_at,
+                    "needs_attention": update_required or bool(disconnected_at),
+                    "accounts": accounts_by_credential.get(credential.get("id"), []),
+                }
+            )
+
+        manual = accounts_by_credential.get("__manual__", [])
+        return json_success(
+            {
+                "connections": connections,
+                "connections_needing_attention": sum(
+                    1 for c in connections if c["needs_attention"]
+                ),
+                "manual_accounts": manual,
+            }
+        )
+    except Exception as e:
+        return json_error("get_institutions", e)
+
+
+@mcp.tool()
+async def get_recent_account_balances(start_date: Optional[str] = None) -> str:
+    """
+    Get recent daily balances for every account.
+
+    Args:
+        start_date: Earliest date to include, YYYY-MM-DD. Defaults to whatever
+            Monarch considers recent.
+
+    Returns:
+        Per-account balance series.
+    """
+    try:
+        client = await get_monarch_client()
+        data = await client.get_recent_account_balances(start_date=start_date)
+
+        accounts = []
+        for account in data.get("accounts") or []:
+            balances = account.get("recentBalances") or []
+            accounts.append(
+                {
+                    "id": account.get("id"),
+                    "balance_count": len(balances),
+                    "balances": balances,
+                }
+            )
+        return json_success({"start_date": start_date, "accounts": accounts})
+    except Exception as e:
+        return json_error("get_recent_account_balances", e)

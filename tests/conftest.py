@@ -16,6 +16,93 @@ sys.modules.setdefault("monarchmoney.monarchmoney", MagicMock())
 
 import pytest
 
+# Shapes below mirror real API responses, reduced to what the wrappers read.
+_INSTITUTIONS_RESPONSE = {
+    "accounts": [
+        {
+            "id": "acc-1",
+            "displayName": "Checking Account",
+            "mask": "4321",
+            "subtype": {"name": "checking", "display": "Checking"},
+            "credential": {"id": "cred-1"},
+            "deletedAt": None,
+        },
+        {
+            "id": "acc-deleted",
+            "displayName": "Old Card",
+            "mask": "9999",
+            "subtype": {"name": "credit_card", "display": "Credit Card"},
+            "credential": {"id": "cred-1"},
+            "deletedAt": "2026-01-01",
+        },
+        {
+            "id": "acc-manual",
+            "displayName": "Cash",
+            "mask": None,
+            "subtype": {"name": "cash", "display": "Cash"},
+            "credential": None,
+            "deletedAt": None,
+        },
+    ],
+    "credentials": [
+        {
+            "id": "cred-1",
+            "institution": {"name": "Test Bank"},
+            "dataProvider": "PLAID",
+            "displayLastUpdatedAt": "2026-08-25",
+            "updateRequired": False,
+            "disconnectedFromDataProviderAt": None,
+        },
+        {
+            "id": "cred-2",
+            "institution": {"name": "Broken Bank"},
+            "dataProvider": "MX",
+            "displayLastUpdatedAt": "2026-06-01",
+            "updateRequired": True,
+            "disconnectedFromDataProviderAt": None,
+        },
+        {
+            "id": "cred-3",
+            "institution": {"name": "Gone Bank"},
+            "dataProvider": "PLAID",
+            "displayLastUpdatedAt": "2026-02-01",
+            "updateRequired": False,
+            "disconnectedFromDataProviderAt": "2026-03-01",
+        },
+    ],
+}
+
+_CREDIT_HISTORY_RESPONSE = {
+    "creditScoreSnapshots": [
+        {"reportedDate": "2026-08-01", "score": 760},
+        {"reportedDate": "2026-06-01", "score": 740},
+        {"reportedDate": "2026-07-01", "score": None},
+    ],
+    "spinwheelUser": {
+        "creditScoreTrackingStatus": "ACTIVE",
+        "onboardingStatus": "COMPLETE",
+        "onboardingErrorMessage": None,
+    },
+}
+
+_RECENT_BALANCES_RESPONSE = {
+    "accounts": [
+        {"id": "acc-1", "recentBalances": [100.0, 110.0, 120.0]},
+        {"id": "acc-2", "recentBalances": []},
+    ]
+}
+
+_DUPLICATES_RESPONSE = [
+    {
+        "date": "2026-08-10",
+        "amount": -42.5,
+        "account_id": "acc-1",
+        "account_name": "Checking Account",
+        "plaidName": "COFFEE SHOP",
+        "transactions": [{"id": "txn-a"}, {"id": "txn-b"}],
+    }
+]
+
 
 @pytest.fixture
 def mock_monarch_client():
@@ -249,6 +336,11 @@ def mock_monarch_client():
     ]
 
     client.upload_account_balance_history.return_value = True
+
+    client.get_institutions.return_value = _INSTITUTIONS_RESPONSE
+    client.get_credit_history.return_value = _CREDIT_HISTORY_RESPONSE
+    client.get_recent_account_balances.return_value = _RECENT_BALANCES_RESPONSE
+    client.find_duplicate_transactions.return_value = _DUPLICATES_RESPONSE
 
     return client
 
