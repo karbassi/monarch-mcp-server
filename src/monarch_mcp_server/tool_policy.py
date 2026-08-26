@@ -46,15 +46,23 @@ logger = logging.getLogger(__name__)
 #: Point this at a path outside the checkout so toggling a tool is not a dirty file.
 CONFIG_ENV_VAR = "MONARCH_TOOLS_CONFIG"
 
-#: Searched in order when the env var is unset; first existing file wins.
+#: Candidates in SEARCH order -- first existing file wins -- which is the reverse
+#: of priority order. Spelled out both ways because reading the tuple one way and
+#: the prose the other makes them look contradictory:
+#:
+#:     search order (this tuple):  repo root, then the shipped copy
+#:     effective priority (high to low):
+#:         1. MONARCH_TOOLS_CONFIG   (checked before either candidate)
+#:         2. <repo root>/tools.toml (uncommitted; overrides the shipped default)
+#:         3. <package>/tools.toml   (the shipped default)
+#:
+#: TestCandidatePrecedence asserts all three, so this comment cannot quietly drift
+#: from the behaviour.
 #:
 #: The shipped copy lives beside the package so a wheel carries it -- a wheel has
 #: no repo root, so the previous layout meant an installed copy found nothing,
-#: fell back to reads-only, and could never enable a write.
-#:
-#: Layering, lowest priority first: shipped default, then an uncommitted
-#: tools.toml at the repo root, then MONARCH_TOOLS_CONFIG. Only the shipped copy
-#: is tracked, so toggling a tool via either override leaves the tree clean.
+#: fell back to reads-only, and could never enable a write. Only the shipped copy
+#: is tracked, so toggling a tool through either override leaves the tree clean.
 _CANDIDATES = (
     Path(__file__).resolve().parents[2] / "tools.toml",
     Path(__file__).resolve().parent / "tools.toml",

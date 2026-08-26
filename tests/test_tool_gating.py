@@ -357,3 +357,50 @@ class TestNotFoundWarningIsAccurate:
 
         logged = " ".join(r.getMessage() for r in caplog.records)
         assert str(a) in logged and str(b) in logged
+
+
+class TestCandidatePrecedence:
+    """Pin the precedence, so a comment cannot drift from the behaviour.
+
+    _CANDIDATES is written in *search* order (first existing wins), which is the
+    reverse of priority order. A reviewer read the two as contradictory, so the
+    ordering is asserted here rather than only described in prose.
+    """
+
+    def test_repo_root_overrides_the_shipped_copy(self, monkeypatch, tmp_path):
+        monkeypatch.delenv(tool_policy.CONFIG_ENV_VAR, raising=False)
+        shipped = tmp_path / "pkg" / "tools.toml"
+        shipped.parent.mkdir()
+        shipped.write_text("[tools]\nget_accounts = true\n", encoding="utf-8")
+        root = tmp_path / "tools.toml"
+        root.write_text("[tools]\nget_budgets = true\n", encoding="utf-8")
+        monkeypatch.setattr(tool_policy, "_CANDIDATES", (root, shipped))
+
+        assert tool_policy.config_path() == root
+        assert tool_policy.load_enabled() == {"get_budgets"}
+
+    def test_shipped_copy_is_used_when_no_repo_root_file(self, monkeypatch, tmp_path):
+        monkeypatch.delenv(tool_policy.CONFIG_ENV_VAR, raising=False)
+        shipped = tmp_path / "pkg" / "tools.toml"
+        shipped.parent.mkdir()
+        shipped.write_text("[tools]\nget_accounts = true\n", encoding="utf-8")
+        monkeypatch.setattr(
+            tool_policy, "_CANDIDATES", (tmp_path / "tools.toml", shipped)
+        )
+
+        assert tool_policy.config_path() == shipped
+        assert tool_policy.load_enabled() == {"get_accounts"}
+
+    def test_env_var_overrides_both(self, monkeypatch, tmp_path):
+        shipped = tmp_path / "pkg" / "tools.toml"
+        shipped.parent.mkdir()
+        shipped.write_text("[tools]\nget_accounts = true\n", encoding="utf-8")
+        root = tmp_path / "tools.toml"
+        root.write_text("[tools]\nget_budgets = true\n", encoding="utf-8")
+        override = tmp_path / "mine.toml"
+        override.write_text("[tools]\nget_cashflow = true\n", encoding="utf-8")
+        monkeypatch.setattr(tool_policy, "_CANDIDATES", (root, shipped))
+        monkeypatch.setenv(tool_policy.CONFIG_ENV_VAR, str(override))
+
+        assert tool_policy.config_path() == override
+        assert tool_policy.load_enabled() == {"get_cashflow"}
