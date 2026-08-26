@@ -24,11 +24,7 @@ tool stays hidden, which surfaces as a missing feature rather than as an LLM
 writing to the account.
 """
 
-import logging
-
 import pytest
-
-logging.disable(logging.NOTSET)
 
 from monarch_mcp_server import tool_policy
 
@@ -194,6 +190,17 @@ def _resolve_tool(name):
     return None
 
 
+def _advertised_tool_names(mcp):
+    """Tool names the server actually advertises, via the public async API.
+
+    FastMCP exposes list_tools() publicly; mcp._tool_manager is private and can
+    change under us on an upstream bump. Kept in one place either way.
+    """
+    import asyncio
+
+    return {t.name for t in asyncio.run(mcp.list_tools())}
+
+
 def _registered_tool_names():
     """The full tool inventory, not the exposed subset.
 
@@ -220,7 +227,7 @@ class TestGatingActuallyApplies:
 
         REGISTERED_TOOLS, WITHHELD_TOOLS = registered_tools(), withheld_tools()
         TOOL_INVENTORY = tool_inventory()
-        advertised = {t.name for t in mcp._tool_manager.list_tools()}
+        advertised = _advertised_tool_names(mcp)
         assert advertised == set(REGISTERED_TOOLS)
         # The thing that matters: nothing that mutates the account is advertised.
         assert not (advertised & tool_policy.WRITE_TOOLS), (
@@ -234,3 +241,78 @@ class TestGatingActuallyApplies:
         """Withheld means "not an MCP tool", not "deleted" -- they stay callable
         in-process so tests and scripts still work."""
         assert callable(_resolve_tool("delete_transaction"))
+
+
+class TestConfigDiscovery:
+    """Finding the config must work for an installed copy, not just a checkout.
+
+    DEFAULT_CONFIG pointed two directories above the module -- the repo root,
+    which exists under the documented `--with-editable` install but not in a
+    wheel, and pyproject ships no package data. An installed copy therefore
+    found no config, fell back to reads-only, and could never enable a write.
+    """
+
+    def test_env_var_expands_a_user_path(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "tools.toml"
+        cfg.write_text("[tools]\nget_accounts = true\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv(tool_policy.CONFIG_ENV_VAR, "~/tools.toml")
+
+        assert tool_policy.config_path() == cfg
+        assert tool_policy.load_enabled() == {"get_accounts"}
+
+    def test_env_var_expands_a_variable(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "tools.toml"
+        cfg.write_text("[tools]\nget_budgets = true\n", encoding="utf-8")
+        monkeypatch.setenv("MY_CFG_DIR", str(tmp_path))
+        monkeypatch.setenv(tool_policy.CONFIG_ENV_VAR, "$MY_CFG_DIR/tools.toml")
+
+        assert tool_policy.config_path() == cfg
+
+    def test_falls_back_to_a_config_beside_the_package(self, tmp_path, monkeypatch):
+        """The location a wheel can actually ship."""
+        monkeypatch.delenv(tool_policy.CONFIG_ENV_VAR, raising=False)
+        beside = tmp_path / "beside" / "tools.toml"
+        beside.parent.mkdir()
+        beside.write_text("[tools]\nget_accounts = true\n", encoding="utf-8")
+        monkeypatch.setattr(
+            tool_policy, "_CANDIDATES", (tmp_path / "absent.toml", beside)
+        )
+
+        assert tool_policy.config_path() == beside
+
+    def test_reports_every_path_tried_when_none_exist(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.delenv(tool_policy.CONFIG_ENV_VAR, raising=False)
+        a, b = tmp_path / "a.toml", tmp_path / "b.toml"
+        monkeypatch.setattr(tool_policy, "_CANDIDATES", (a, b))
+
+        with caplog.at_level("WARNING", logger=tool_policy.logger.name):
+            enabled = tool_policy.load_enabled()
+
+        assert enabled == set(tool_policy.FALLBACK_READ_TOOLS)
+        logged = " ".join(r.getMessage() for r in caplog.records)
+        assert str(a) in logged and str(b) in logged
+        assert tool_policy.CONFIG_ENV_VAR in logged
+
+
+def test_exactly_one_tools_toml_is_tracked():
+    """One config in the tree, or the two copies drift.
+
+    It lives inside the package so a wheel ships it. A repo-root tools.toml and
+    MONARCH_TOOLS_CONFIG both still override it, in that order -- but neither is
+    committed.
+    """
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    tracked = subprocess.run(
+        ["git", "ls-files", "*tools.toml"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.split()
+    assert tracked == ["src/monarch_mcp_server/tools.toml"], tracked

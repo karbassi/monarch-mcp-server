@@ -46,7 +46,22 @@ logger = logging.getLogger(__name__)
 #: Point this at a path outside the checkout so toggling a tool is not a dirty file.
 CONFIG_ENV_VAR = "MONARCH_TOOLS_CONFIG"
 
-DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "tools.toml"
+#: Searched in order when the env var is unset; first existing file wins.
+#:
+#: The shipped copy lives beside the package so a wheel carries it -- a wheel has
+#: no repo root, so the previous layout meant an installed copy found nothing,
+#: fell back to reads-only, and could never enable a write.
+#:
+#: Layering, lowest priority first: shipped default, then an uncommitted
+#: tools.toml at the repo root, then MONARCH_TOOLS_CONFIG. Only the shipped copy
+#: is tracked, so toggling a tool via either override leaves the tree clean.
+_CANDIDATES = (
+    Path(__file__).resolve().parents[2] / "tools.toml",
+    Path(__file__).resolve().parent / "tools.toml",
+)
+
+#: Retained for callers that want the checkout location specifically.
+DEFAULT_CONFIG = _CANDIDATES[0]
 
 #: Tools that only ever read. Verified from each tool's client call or GraphQL
 #: operation, not from its name -- see the module docstring for why that matters.
@@ -137,7 +152,19 @@ FALLBACK_READ_TOOLS = READ_TOOLS
 
 
 def config_path() -> Path:
-    return Path(os.environ.get(CONFIG_ENV_VAR) or DEFAULT_CONFIG)
+    """The config to read: the env var if set, else the first candidate present.
+
+    expanduser/expandvars on the env var so MONARCH_TOOLS_CONFIG=~/tools.toml
+    resolves rather than looking like a missing file and silently degrading to
+    reads-only.
+    """
+    override = os.environ.get(CONFIG_ENV_VAR)
+    if override:
+        return Path(os.path.expandvars(os.path.expanduser(override)))
+    for candidate in _CANDIDATES:
+        if candidate.is_file():
+            return candidate
+    return _CANDIDATES[0]
 
 
 def _read_tools_table() -> dict[str, object] | None:
@@ -147,9 +174,9 @@ def _read_tools_table() -> dict[str, object] | None:
             data = tomllib.load(fh)
     except FileNotFoundError:
         logger.warning(
-            "tool config not found at %s — falling back to the built-in read-only "
-            "set. Set %s to point at one.",
-            path,
+            "tool config not found (tried: %s) — falling back to the built-in "
+            "read-only set, so no write tool is exposed. Set %s to point at one.",
+            ", ".join(str(c) for c in _CANDIDATES),
             CONFIG_ENV_VAR,
         )
         return None

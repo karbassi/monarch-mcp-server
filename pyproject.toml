@@ -56,6 +56,13 @@ monarch-mcp-server = "monarch_mcp_server.server:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Ship the tool allowlist inside the package. Without this a wheel has no config
+# at all -- there is no repo root to find one in -- so tool_policy falls back to
+# reads-only and a write can never be enabled. Override the location per-install
+# with MONARCH_TOOLS_CONFIG.
+[tool.setuptools.package-data]
+monarch_mcp_server = ["tools.toml"]
+
 [tool.black]
 line-length = 88
 target-version = ['py312']
