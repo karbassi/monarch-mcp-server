@@ -37,6 +37,26 @@ _MAX_TOKEN_BYTES = 64 * 1024
 _PROBE_USERNAME = "__keyring_probe__"
 
 
+# The plaintext file fallback is POSIX-only: it depends on these to store the
+# token with owner-only permissions and to refuse a symlink planted at the path.
+# The keyring path has no such requirement -- on Windows, Credential Manager
+# works and this fallback is only reached when a keyring is absent or throws --
+# so the right response to a missing primitive is a clear refusal, not an
+# AttributeError from deep inside a save.
+_POSIX_PRIMITIVES = ("O_NOFOLLOW", "O_NONBLOCK", "fchmod", "getuid")
+
+
+def _require_posix_primitives() -> None:
+    missing = [name for name in _POSIX_PRIMITIVES if not hasattr(os, name)]
+    if missing:
+        raise OSError(
+            "The file-based token fallback needs POSIX primitives that are "
+            f"unavailable here (missing: {', '.join(missing)}), so the token "
+            "cannot be stored with owner-only permissions or protected against "
+            "symlink redirection. Configure a working keyring backend instead."
+        )
+
+
 def _keyring_available() -> bool:
     """Probe whether the active keyring backend can actually round-trip a value.
 
@@ -93,6 +113,7 @@ class SecureMonarchSession:
             raise OSError(f"{_TOKEN_DIR} is a symlink; refusing to use it")
 
     def _save_token_file(self, token: str) -> None:
+        _require_posix_primitives()
         self._assert_token_dir_safe()
         _TOKEN_DIR.mkdir(parents=True, exist_ok=True)
         _TOKEN_DIR.chmod(stat.S_IRWXU)  # 700
@@ -135,8 +156,11 @@ class SecureMonarchSession:
         # whatever it points at, so the read path needs the same guarantees as
         # the write path — the file must be a regular file that we own.
         try:
+            _require_posix_primitives()
             self._assert_token_dir_safe()
         except OSError as e:
+            # Callers already treat None as "no session", so refuse rather than
+            # crash -- the user gets a re-login prompt and a logged reason.
             logger.warning(f"⚠️  Refusing to read the token file: {e}")
             return None
         try:

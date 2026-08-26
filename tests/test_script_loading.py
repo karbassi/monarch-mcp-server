@@ -53,3 +53,27 @@ def test_repeated_loads_do_not_accumulate(path_mutating_script):
     # already present still grows the list, which is how the original leak hid.
     assert len(sys.path) == len(before)
     assert list(sys.path) == before
+
+def test_load_script_raises_a_clear_error_for_an_unloadable_path(tmp_path):
+    """spec_from_file_location returns None for a path it cannot handle (an
+    unrecognised extension, for one). Reaching through that gives an opaque
+    AttributeError on `spec.loader`; the helper should say what went wrong."""
+    from tests.conftest import load_script
+
+    bad = tmp_path / "not_python.txt"
+    bad.write_text("x = 1", encoding="utf-8")
+
+    with pytest.raises(ImportError, match="not_python.txt"):
+        with load_script(bad):
+            pass
+
+
+def test_load_script_restores_sys_path_even_when_loading_fails(tmp_path):
+    bad = tmp_path / "not_python.txt"
+    bad.write_text("x = 1", encoding="utf-8")
+
+    before = list(sys.path)
+    with pytest.raises(ImportError):
+        with load_script(bad):
+            pass
+    assert list(sys.path) == before

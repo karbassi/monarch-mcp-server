@@ -802,3 +802,41 @@ class TestDeleteLoggingIsAccurate:
 
         claimed = [r.message for r in caplog.records if "deleted" in r.message.lower()]
         assert not claimed, f"claimed a deletion that did not happen: {claimed}"
+
+
+class TestNonPosixFailsCleanly:
+    """The file fallback is POSIX-only, so it must say so rather than crash.
+
+    It relies on O_NOFOLLOW, O_NONBLOCK, fchmod and getuid. Where those are
+    absent the bare attribute access raises AttributeError deep inside a save,
+    which tells the user nothing. The keyring path is unaffected -- on Windows
+    that works, and this fallback is only reached when the keyring is missing or
+    throws.
+    """
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        store = tmp_path / "store"
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", store / "token")
+        return store
+
+    @pytest.mark.parametrize("missing", ["O_NOFOLLOW", "O_NONBLOCK", "fchmod", "getuid"])
+    def test_save_refuses_with_a_clear_message(self, store, monkeypatch, missing):
+        monkeypatch.delattr(ss_module.os, missing, raising=False)
+
+        with pytest.raises(OSError) as excinfo:
+            ss_module.SecureMonarchSession()._save_token_file("a-token")
+
+        message = str(excinfo.value)
+        assert missing in message
+        assert "keyring" in message.lower()
+
+    @pytest.mark.parametrize("missing", ["O_NOFOLLOW", "O_NONBLOCK", "fchmod", "getuid"])
+    def test_load_returns_none_rather_than_crashing(self, store, monkeypatch, missing):
+        store.mkdir()
+        (store / "token").write_text("a-token", encoding="utf-8")
+        monkeypatch.delattr(ss_module.os, missing, raising=False)
+
+        # Callers already treat None as "no session"; crashing is the bad case.
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
