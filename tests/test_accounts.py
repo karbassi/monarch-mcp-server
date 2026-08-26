@@ -184,17 +184,13 @@ class TestUploadAccountBalanceHistory:
         mock_monarch_client.upload_account_balance_history.assert_not_called()
 
     async def test_rejects_invalid_json(self, mock_monarch_client):
-        result = json.loads(
-            await upload_account_balance_history("12345", "not json")
-        )
+        result = json.loads(await upload_account_balance_history("12345", "not json"))
         assert result["error"] is True
         assert "valid JSON" in result["message"]
         mock_monarch_client.get_account_history.assert_not_called()
 
     async def test_rejects_non_object(self, mock_monarch_client):
-        result = json.loads(
-            await upload_account_balance_history("12345", "[1, 2, 3]")
-        )
+        result = json.loads(await upload_account_balance_history("12345", "[1, 2, 3]"))
         assert result["error"] is True
         assert "JSON object" in result["message"]
         mock_monarch_client.get_account_history.assert_not_called()
@@ -226,8 +222,8 @@ class TestAccountSubtypeAndNetWorthFields:
 
     Without them a caller cannot tell a Roth IRA from a taxable brokerage, or see
     which accounts Monarch excludes from net worth, without dropping to raw
-    GraphQL. Confirmed against the live API: subtype is populated on every
-    account, and 7 of 48 have include_in_net_worth False.
+    GraphQL. Live measurements supporting that live in the PR, deliberately not
+    here -- an account count in a unit-test docstring goes stale and misleads.
     """
 
     async def test_subtype_mask_and_flags_are_passed_through(self):
