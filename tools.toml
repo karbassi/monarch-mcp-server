@@ -1,0 +1,107 @@
+# Which tools this MCP server exposes.
+#
+# The server holds credentials to a real personal-finance account and hands them
+# to an LLM. Everything that can change that account is withheld by default;
+# flip a line to `true` and restart to enable it.
+#
+# This is an allowlist. A tool absent from this file is NOT exposed, which is
+# deliberate: a new tool arriving from upstream stays hidden until classified,
+# rather than being exposed silently. See src/monarch_mcp_server/tool_policy.py
+# for why classifying by tool name does not work.
+#
+# Set MONARCH_TOOLS_CONFIG to keep your copy outside the checkout.
+
+[tools]
+
+# ==========================================================================
+# READ-ONLY — enabled by default
+# ==========================================================================
+
+# Local only — no network, no account access
+check_auth_status = true
+debug_session_loading = true
+setup_authentication = true
+
+# Accounts
+get_accounts = true
+get_account_holdings = true
+get_account_balance_history = true
+
+# Net worth, cashflow, summaries
+get_net_worth = true
+get_net_worth_by_account_type = true
+get_cashflow = true
+get_cashflow_by_month = true
+get_spending_summary = true
+get_transactions_summary = true
+
+# Budgets
+get_budgets = true
+
+# Categories
+get_transaction_categories = true
+get_transaction_category_groups = true
+get_category_details = true
+
+# Merchants
+get_merchant = true
+
+# Rules
+get_transaction_rules = true
+
+# Tags
+get_transaction_tags = true
+
+# Transactions
+get_transactions = true
+get_transaction_details = true
+get_transactions_needing_review = true
+get_recurring_transactions = true
+search_transactions = true
+get_transaction_splits = true
+
+# ==========================================================================
+# WRITES AND SIDE EFFECTS — withheld by default
+# ==========================================================================
+
+# Transactions — create, delete, edit. No undo.
+create_transaction = false
+delete_transaction = false
+update_transaction = false
+update_transaction_notes = false
+categorize_transaction = false
+bulk_categorize_transactions = false
+mark_transaction_reviewed = false
+split_transaction = false
+
+# Tags
+create_transaction_tag = false
+add_transaction_tag = false
+set_transaction_tags = false
+
+# Categories
+create_transaction_category = false
+update_category = false
+
+# Merchants — review_recurring_stream is a mutation (Web_ReviewStream)
+update_merchant = false
+review_recurring_stream = false
+
+# Auto-categorisation rules — these rewrite how future transactions are filed
+create_transaction_rule = false
+update_transaction_rule = false
+delete_transaction_rule = false
+
+# Budgets
+set_budget_amount = false
+
+# Account history
+upload_account_balance_history = false
+
+# No Monarch-side change, but contacts your institutions; can trip rate limits or MFA
+refresh_accounts = false
+
+# Locally stored credentials, not account data. login_setup.py is the documented path
+monarch_login = false
+monarch_login_with_token = false
+monarch_logout = false
