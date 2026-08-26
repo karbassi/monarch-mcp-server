@@ -880,3 +880,66 @@ class TestPosixPrimitiveGuardIsSubstantive:
         with pytest.raises(OSError) as excinfo:
             ss_module.SecureMonarchSession()._save_token_file("a-token")
         assert fn in str(excinfo.value)
+
+
+class TestFifoAtTokenPathDoesNotHang:
+    """Opening a FIFO for writing blocks until a reader appears.
+
+    The read path already passes O_NONBLOCK for exactly this reason, but the
+    write path did not -- so a FIFO planted at the token path would hang
+    _save_token_file indefinitely, before the S_ISREG guard could reject it.
+    A hang is worse than an error: nothing is logged and the server just stops.
+    """
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        store = tmp_path / "store"
+        store.mkdir()
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", store / "token")
+        return store
+
+    def test_save_does_not_block_on_a_fifo(self, store):
+        import signal
+
+        os.mkfifo(store / "token")
+
+        class _Timeout(Exception):
+            pass
+
+        def _alarm(_sig, _frm):
+            raise _Timeout("open blocked")
+
+        old = signal.signal(signal.SIGALRM, _alarm)
+        signal.setitimer(signal.ITIMER_REAL, 3.0)
+        try:
+            with pytest.raises(OSError) as excinfo:
+                ss_module.SecureMonarchSession()._save_token_file("a-token")
+            assert not isinstance(excinfo.value, _Timeout)
+        except _Timeout:
+            pytest.fail("_save_token_file blocked on a FIFO at the token path")
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, old)
+
+    def test_load_does_not_block_on_a_fifo(self, store):
+        os.mkfifo(store / "token")
+        assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+
+def test_readme_documents_exactly_the_required_primitives():
+    """The README names the POSIX primitives the fallback needs. That list drifted
+    once already (O_NONBLOCK was missing), so pin it to the code rather than
+    trusting a manual read."""
+    import re
+    from pathlib import Path
+
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(
+        encoding="utf-8"
+    )
+    line = next(ln for ln in readme.splitlines() if "POSIX-only" in ln)
+    documented = set(re.findall(r"`(O_[A-Z_]+|fchmod|getuid)`", line))
+    assert documented == set(ss_module._POSIX_PRIMITIVES), (
+        f"README documents {sorted(documented)}, code requires "
+        f"{sorted(ss_module._POSIX_PRIMITIVES)}"
+    )

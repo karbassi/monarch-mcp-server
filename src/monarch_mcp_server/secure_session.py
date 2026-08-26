@@ -54,18 +54,24 @@ _POSIX_PRIMITIVES = _POSIX_FLAGS + _POSIX_CALLS
 
 
 def _require_posix_primitives() -> None:
-    missing = [
-        name
-        for name in _POSIX_FLAGS
-        if not isinstance(getattr(os, name, 0), int) or not getattr(os, name, 0)
-    ]
-    missing += [name for name in _POSIX_CALLS if not callable(getattr(os, name, None))]
+    missing = []
+    for name in _POSIX_PRIMITIVES:
+        value = getattr(os, name, None)
+        if name in _POSIX_FLAGS:
+            # A flag of 0 is a no-op: OR-ing it into os.open() enables nothing.
+            usable = isinstance(value, int) and value != 0
+        else:
+            usable = callable(value)
+        if not usable:
+            missing.append(name)
     if missing:
         raise OSError(
             "The file-based token fallback needs POSIX primitives that are "
             f"unavailable here (missing: {', '.join(missing)}), so the token "
-            "cannot be stored with owner-only permissions or protected against "
-            "symlink redirection. Configure a working keyring backend instead."
+            "cannot be stored with owner-only permissions, protected against "
+            "symlink redirection, or read and written without risking a hang on "
+            "a special file left at the path. Configure a working keyring "
+            "backend instead."
         )
 
 
@@ -136,9 +142,14 @@ class SecureMonarchSession:
         # O_NOFOLLOW refuses a symlink planted at the token path outright, rather
         # than following it and writing the token to an attacker-chosen target.
         # Atomic with the open, so there is no window to race.
+        # O_NONBLOCK so a FIFO planted at the path fails the S_ISREG check below
+        # instead of blocking the open until a reader appears -- a hang is worse
+        # than an error, since nothing is logged and the server simply stops. It
+        # is a no-op for regular files. The read path always passed it; the write
+        # path did not, which was the asymmetry.
         fd = os.open(
             _TOKEN_FILE,
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_NONBLOCK,
             mode,
         )
         try:
