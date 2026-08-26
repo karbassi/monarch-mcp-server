@@ -306,7 +306,11 @@ async def get_institutions() -> str:
             accounts_by_credential.setdefault(key, []).append(
                 {
                     "id": account.get("id"),
-                    "name": account.get("displayName"),
+                    # Same fallback as get_accounts above. Defensive rather
+                    # than load-bearing today -- the institutions query does not
+                    # select `name` -- but it costs one `or` and stops a
+                    # selection-set change producing null names.
+                    "name": account.get("displayName") or account.get("name"),
                     "mask": account.get("mask"),
                     "subtype": subtype.get("display") or subtype.get("name"),
                 }

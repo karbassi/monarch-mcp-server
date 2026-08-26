@@ -154,3 +154,55 @@ class TestFindDuplicateTransactions:
         data = json.loads(await find_duplicate_transactions())
         assert data["group_count"] == 0
         assert data["duplicate_groups"] == []
+
+
+class TestInstitutionAccountNaming:
+    """Account names must not come back null when displayName is absent.
+
+    get_accounts in the same module falls back to `name`; get_institutions did
+    not. The fallback is defensive rather than currently load-bearing -- the
+    institutions query does not select `name` at all today (verified against the
+    live API: the account keys are __typename, credential, deletedAt,
+    displayName, id, mask, subtype) -- but the cost is one `or` and it stops a
+    selection-set change from silently producing nulls.
+    """
+
+    @patch("monarch_mcp_server.tools.accounts.get_monarch_client")
+    async def test_falls_back_to_name(self, mock_get, mock_monarch_client):
+        mock_monarch_client.get_institutions.return_value = {
+            "accounts": [
+                {
+                    "id": "acc-1",
+                    "name": "Fallback Name",
+                    "subtype": {"name": "checking", "display": "Checking"},
+                    "credential": {"id": "cred-1"},
+                    "deletedAt": None,
+                }
+            ],
+            "credentials": [
+                {
+                    "id": "cred-1",
+                    "institution": {"name": "Test Bank"},
+                    "dataProvider": "PLAID",
+                    "displayLastUpdatedAt": "2026-08-25",
+                    "updateRequired": False,
+                    "disconnectedFromDataProviderAt": None,
+                }
+            ],
+        }
+        mock_get.return_value = mock_monarch_client
+        data = json.loads(await get_institutions())
+
+        names = [a["name"] for c in data["connections"] for a in c["accounts"]]
+        assert names == ["Fallback Name"]
+
+    @patch("monarch_mcp_server.tools.accounts.get_monarch_client")
+    async def test_display_name_still_wins(self, mock_get, mock_monarch_client):
+        mock_monarch_client.get_institutions.return_value["accounts"][0]["name"] = "Raw"
+        mock_get.return_value = mock_monarch_client
+        data = json.loads(await get_institutions())
+
+        test_bank = next(
+            c for c in data["connections"] if c["institution"] == "Test Bank"
+        )
+        assert [a["name"] for a in test_bank["accounts"]] == ["Checking Account"]
