@@ -111,33 +111,57 @@ class TestLogout:
 
 
 class TestDebugSessionLoading:
-    def test_no_token_message(self):
+    """These patch load_session, not load_token: a cookie-mode session carries
+    no `token` key, so load_token() cannot answer "am I authenticated?" (see
+    tests/test_auth_status.py). The requirements asserted here are unchanged --
+    report absence, never disclose the credential, never dump a traceback."""
+
+    def test_no_session_message(self):
         from monarch_mcp_server.tools import auth as tools_auth
 
         with patch(
-            "monarch_mcp_server.tools.auth.secure_session.load_token",
+            "monarch_mcp_server.tools.auth.secure_session.load_session",
             return_value=None,
         ):
             result = asyncio.run(tools_auth.debug_session_loading())
-        assert "No token" in result
+        assert "No session" in result
+        assert "❌" in result
 
-    def test_token_present_does_not_leak_length(self):
+    def test_session_present_does_not_leak_the_credential(self):
+        from monarch_mcp_server.tools import auth as tools_auth
+
+        secret = "a-secret-token-value"
+        with patch(
+            "monarch_mcp_server.tools.auth.secure_session.load_session",
+            return_value={"token": secret, "auth_mode": "token"},
+        ):
+            result = asyncio.run(tools_auth.debug_session_loading())
+        assert "✅" in result
+        assert "length" not in result.lower()
+        assert secret not in result
+        # Nor any substring long enough to be useful, nor the length itself.
+        assert secret[:8] not in result
+        assert str(len(secret)) not in result
+
+    def test_cookie_session_does_not_leak_cookie_values(self):
         from monarch_mcp_server.tools import auth as tools_auth
 
         with patch(
-            "monarch_mcp_server.tools.auth.secure_session.load_token",
-            return_value="a-secret-token-value",
+            "monarch_mcp_server.tools.auth.secure_session.load_session",
+            return_value={
+                "cookies": {"session_id": "cookie-secret-abc"},
+                "auth_mode": "cookie",
+            },
         ):
             result = asyncio.run(tools_auth.debug_session_loading())
-        assert "Token found" in result
-        assert "length" not in result.lower()
-        assert "a-secret-token-value" not in result
+        assert "✅" in result
+        assert "cookie-secret-abc" not in result
 
     def test_keyring_failure_omits_traceback(self):
         from monarch_mcp_server.tools import auth as tools_auth
 
         with patch(
-            "monarch_mcp_server.tools.auth.secure_session.load_token",
+            "monarch_mcp_server.tools.auth.secure_session.load_session",
             side_effect=RuntimeError("keyring backend unavailable"),
         ):
             result = asyncio.run(tools_auth.debug_session_loading())

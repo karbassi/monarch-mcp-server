@@ -1,22 +1,23 @@
 """Tests for transaction-related MCP tools."""
 
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
+import pytest
+
 from monarch_mcp_server.tools.transactions import (
-    get_transactions,
-    create_transaction,
-    update_transaction,
-    categorize_transaction,
-    get_transactions_needing_review,
-    update_transaction_notes,
-    mark_transaction_reviewed,
     bulk_categorize_transactions,
-    search_transactions,
-    get_transaction_details,
+    categorize_transaction,
+    create_transaction,
     delete_transaction,
     get_recurring_transactions,
+    get_transaction_details,
+    get_transactions,
+    get_transactions_needing_review,
+    mark_transaction_reviewed,
+    search_transactions,
+    update_transaction,
+    update_transaction_notes,
 )
 
 
@@ -241,8 +242,17 @@ class TestMarkTransactionReviewed:
     """Tests for mark_transaction_reviewed tool."""
 
     @patch("monarch_mcp_server.tools.transactions.get_monarch_client")
-    async def test_mark_reviewed_success(self, mock_get_client):
-        """Test marking transaction as reviewed."""
+    async def test_mark_reviewed_sends_reviewed_not_needs_review(self, mock_get_client):
+        """Marking reviewed must send `reviewed`, not `needs_review=False`.
+
+        These are different fields in the upstream library, per its own
+        docstring for update_transaction: `needs_review` maps to the
+        GraphQL input `needsReview`, `reviewed` maps to `reviewed`, and
+        "to remove the reviewed status from a transaction, use
+        needs_review=True". So needs_review=False clears the needs-review
+        flag and never sets reviewed status -- the tool silently did nothing
+        it claimed to do.
+        """
         mock_client = AsyncMock()
         mock_client.update_transaction.return_value = {
             "updateTransaction": {
@@ -255,7 +265,8 @@ class TestMarkTransactionReviewed:
 
         call_kwargs = mock_client.update_transaction.call_args.kwargs
         assert call_kwargs["transaction_id"] == "txn_123"
-        assert call_kwargs["needs_review"] is False
+        assert call_kwargs.get("reviewed") is True
+        assert "needs_review" not in call_kwargs
 
         data = json.loads(result)
         assert "updateTransaction" in data
@@ -362,7 +373,7 @@ class TestBulkCategorizeTransactions:
         assert data["error"] is True
         assert "Auth needed" in data["message"]
 
-    @patch('monarch_mcp_server.tools.transactions.get_monarch_client')
+    @patch("monarch_mcp_server.tools.transactions.get_monarch_client")
     async def test_bulk_categorize_dry_run_skips_client(self, mock_get_client):
         """dry_run returns the planned update without calling the SDK."""
         result = await bulk_categorize_transactions(
@@ -987,3 +998,78 @@ class TestCategorizeTransaction:
         mock_monarch_client.update_transaction.side_effect = Exception("boom")
         result = await categorize_transaction("txn-1", "cat-2")
         assert "categorize_transaction" in result
+
+
+class TestUpdateTransactionReviewedField:
+    """`reviewed` must reach the client as its own field, distinct from
+    needs_review -- see TestMarkTransactionReviewed for why they differ."""
+
+    @patch("monarch_mcp_server.tools.transactions.get_monarch_client")
+    async def test_reviewed_is_passed_through(self, mock_get_client):
+        mock_client = AsyncMock()
+        mock_client.update_transaction.return_value = {"updateTransaction": {}}
+        mock_get_client.return_value = mock_client
+
+        await update_transaction(transaction_id="txn_1", reviewed=True)
+
+        call_kwargs = mock_client.update_transaction.call_args.kwargs
+        assert call_kwargs["reviewed"] is True
+
+    @patch("monarch_mcp_server.tools.transactions.get_monarch_client")
+    async def test_reviewed_omitted_when_not_given(self, mock_get_client):
+        mock_client = AsyncMock()
+        mock_client.update_transaction.return_value = {"updateTransaction": {}}
+        mock_get_client.return_value = mock_client
+
+        await update_transaction(transaction_id="txn_1", notes="x")
+
+        assert "reviewed" not in mock_client.update_transaction.call_args.kwargs
+
+
+class TestReviewedAndNeedsReviewAreExclusive:
+    """`reviewed` and `needs_review` are opposing intents on the same status.
+
+    Per the upstream library's docstring, reviewed status is cleared with
+    needs_review=True -- so sending both, or sending reviewed=False, asks for
+    two different things at once or for something with no documented meaning.
+    Neither should reach the API unchecked; this PR introduced `reviewed`, so
+    it should not also introduce a way to send a contradiction.
+    """
+
+    @patch("monarch_mcp_server.tools.transactions.get_monarch_client")
+    async def test_both_together_is_refused(self, mock_get_client):
+        mock_client = AsyncMock()
+        mock_get_client.return_value = mock_client
+
+        result = await update_transaction(
+            transaction_id="txn_1", reviewed=True, needs_review=True
+        )
+
+        data = json.loads(result)
+        assert data.get("error") is True
+        assert "needs_review" in data["message"]
+        mock_client.update_transaction.assert_not_called()
+
+    @patch("monarch_mcp_server.tools.transactions.get_monarch_client")
+    async def test_reviewed_false_is_refused(self, mock_get_client):
+        mock_client = AsyncMock()
+        mock_get_client.return_value = mock_client
+
+        result = await update_transaction(transaction_id="txn_1", reviewed=False)
+
+        data = json.loads(result)
+        assert data.get("error") is True
+        assert "needs_review=True" in data["message"]
+        mock_client.update_transaction.assert_not_called()
+
+    @patch("monarch_mcp_server.tools.transactions.get_monarch_client")
+    async def test_each_alone_still_works(self, mock_get_client):
+        mock_client = AsyncMock()
+        mock_client.update_transaction.return_value = {"updateTransaction": {}}
+        mock_get_client.return_value = mock_client
+
+        await update_transaction(transaction_id="txn_1", reviewed=True)
+        assert mock_client.update_transaction.call_args.kwargs["reviewed"] is True
+
+        await update_transaction(transaction_id="txn_1", needs_review=True)
+        assert mock_client.update_transaction.call_args.kwargs["needs_review"] is True

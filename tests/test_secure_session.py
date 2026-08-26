@@ -1,6 +1,7 @@
 """Tests for keyring backend detection and secure session storage."""
 
 import os
+import stat
 import sys
 import textwrap
 import types
@@ -14,6 +15,38 @@ from monarch_mcp_server.secure_session import _keyring_available
 # Captured before the autouse fixture below stubs it out, so the cleanup test
 # can still exercise the real implementation.
 _REAL_CLEANUP = ss_module.SecureMonarchSession._cleanup_old_session_files
+
+
+def assert_token_on_disk(path, expected):
+    """Assert what the token file holds, allowing for encryption at rest.
+
+    Where DPAPI is available the file holds a DPAPI blob rather than the
+    plaintext, so compare through the same decryption the loader performs.
+    Where it is not, the file is plaintext and compared directly -- so this
+    still fails if the implementation starts encrypting where it should not,
+    or stops where it should.
+    """
+    raw = path.read_text(encoding="utf-8")
+    if raw.startswith(ss_module._DPAPI_PREFIX):
+        assert ss_module._dpapi_decrypt(raw) == expected
+    else:
+        assert raw == expected
+
+
+def assert_owner_only_mode(path, expected):
+    """Assert POSIX mode bits, but only where the platform enforces them.
+
+    Windows honours the read-only attribute and nothing else, so chmod/0600 is
+    inert there -- which is exactly why the file fallback encrypts at rest with
+    DPAPI on that platform instead of relying on mode bits. Asserting them
+    unconditionally would fail on the one platform this protection was added
+    for. The rest of each test still runs.
+    """
+    if sys.platform == "win32":
+        return
+    assert (
+        stat.S_IMODE(path.stat().st_mode) == expected
+    ), f"{path} is {oct(stat.S_IMODE(path.stat().st_mode))}, expected {oct(expected)}"
 
 
 @pytest.fixture(autouse=True)
@@ -107,9 +140,7 @@ class TestKeyringAvailable:
         assert len(fake.get_calls) == 1
         assert len(fake.delete_calls) == 1
 
-    def test_macos_keychain_class_name_collision_is_handled(
-        self, install_fake_keyring
-    ):
+    def test_macos_keychain_class_name_collision_is_handled(self, install_fake_keyring):
         """The macOS Keychain and fail backends share the class name `Keyring`.
 
         Previously this caused real macOS keyrings to be rejected by name and
@@ -152,9 +183,11 @@ class TestKeyringAvailable:
     def test_returns_false_when_keyring_not_installed(self, monkeypatch):
         """If the keyring package is absent, treat as unavailable, don't crash."""
 
-        real_import = __builtins__["__import__"] if isinstance(
-            __builtins__, dict
-        ) else __builtins__.__import__
+        real_import = (
+            __builtins__["__import__"]
+            if isinstance(__builtins__, dict)
+            else __builtins__.__import__
+        )
 
         def fake_import(name, *args, **kwargs):
             if name == "keyring":
@@ -327,7 +360,9 @@ class TestBackwardCompatLoading:
 class TestGetAuthenticatedClient:
     """get_authenticated_client must dispatch on the stored auth_mode."""
 
-    def test_cookie_mode_calls_set_cookies_on_client(self, storage_keyring, monkeypatch):
+    def test_cookie_mode_calls_set_cookies_on_client(
+        self, storage_keyring, monkeypatch
+    ):
         session, _ = storage_keyring
         session.save_session_blob(
             cookies={"session_id": "s", "csrftoken": "c"},
@@ -408,9 +443,9 @@ class TestFileFallbackPermissions:
         session = ss_module.SecureMonarchSession()
         session._save_token_file("super-secret-token")
 
-        assert token_file.read_text() == "super-secret-token"
+        assert_token_on_disk(token_file, "super-secret-token")
         assert create_modes and all(m == 0o600 for m in create_modes)
-        assert _stat.S_IMODE(token_file.stat().st_mode) == 0o600
+        assert_owner_only_mode(token_file, 0o600)
 
     def test_preexisting_file_locked_down_before_token_is_written(
         self, tmp_path, monkeypatch
@@ -458,13 +493,13 @@ class TestFileFallbackPermissions:
         session = ss_module.SecureMonarchSession()
         session._save_token_file("super-secret-token")
 
-        assert token_file.read_text() == "super-secret-token"
+        assert_token_on_disk(token_file, "super-secret-token")
         # Guard: an empty list would pass the all() below vacuously.
         assert modes_at_write, "token was never written"
-        assert all(m == 0o600 for m in modes_at_write), (
-            f"token written while file was {[oct(m) for m in modes_at_write]}"
-        )
-        assert _stat.S_IMODE(token_file.stat().st_mode) == 0o600
+        assert all(
+            m == 0o600 for m in modes_at_write
+        ), f"token written while file was {[oct(m) for m in modes_at_write]}"
+        assert_owner_only_mode(token_file, 0o600)
 
     def test_symlink_at_token_path_is_refused(self, tmp_path, monkeypatch):
         """A symlink planted at the token path must not redirect the write. The
@@ -579,8 +614,8 @@ class TestFileFallbackPermissions:
         session = ss_module.SecureMonarchSession()
         session._save_token_file("super-secret-token")
 
-        assert token_file.read_text() == "super-secret-token"
-        assert _stat.S_IMODE(token_file.stat().st_mode) == 0o600
+        assert_token_on_disk(token_file, "super-secret-token")
+        assert_owner_only_mode(token_file, 0o600)
 
 
 class TestFileFallbackReadPath:
@@ -641,9 +676,7 @@ class TestFileFallbackReadPath:
     def test_file_owned_by_another_user_is_refused(self, store, monkeypatch):
         (store / "token").write_text("planted-token")
         real_fstat = ss_module.os.fstat
-        monkeypatch.setattr(
-            ss_module.os, "fstat", lambda fd: _Foreign(real_fstat(fd))
-        )
+        monkeypatch.setattr(ss_module.os, "fstat", lambda fd: _Foreign(real_fstat(fd)))
 
         assert ss_module.SecureMonarchSession()._load_token_file() is None
 
@@ -756,9 +789,7 @@ class TestCleanupOldSessionFiles:
         # expanduser("~") is redirected so the real implementation cannot reach
         # the developer's home; $HOME itself stays put (see isolate_real_home).
         fake_home = tmp_path / "home"  # already created by isolate_real_home
-        monkeypatch.setattr(
-            ss_module.os.path, "expanduser", lambda p: str(fake_home)
-        )
+        monkeypatch.setattr(ss_module.os.path, "expanduser", lambda p: str(fake_home))
 
         mm = tmp_path / ".mm"
         mm.mkdir()
@@ -769,3 +800,167 @@ class TestCleanupOldSessionFiles:
 
         assert not pickle.exists(), "CWD-relative session pickle was not cleaned up"
         assert not mm.exists(), "emptied .mm directory was not removed"
+
+
+class TestTokenDirSurvivesDeletion:
+    """Deleting the token must not delete the directory holding it.
+
+    The directory is the 0700 container the token lives inside. Removing it on
+    logout throws that boundary away and forces the next save to recreate it --
+    and _assert_token_dir_safe()'s is_symlink() check runs *before* mkdir, so
+    anything that can write to $HOME gets a fresh chance to win that race and
+    pre-create the path as a symlink or a world-writable directory. Keeping the
+    directory means the boundary is established once and persists.
+    """
+
+    def test_delete_token_file_keeps_the_directory(self, tmp_path, monkeypatch):
+        import stat as _stat
+
+        store = tmp_path / "store"
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", store / "token")
+
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("a-token")
+        assert (store / "token").exists()
+        dir_inode = store.stat().st_ino
+
+        session._delete_token_file()
+
+        assert not (store / "token").exists(), "token file should be gone"
+        assert store.is_dir(), "token directory was removed"
+        assert store.stat().st_ino == dir_inode, "directory was recreated, not kept"
+        assert_owner_only_mode(store, 0o700)
+
+    def test_delete_token_is_idempotent(self, tmp_path, monkeypatch):
+        store = tmp_path / "store"
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", store / "token")
+
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("a-token")
+        session._delete_token_file()
+        session._delete_token_file()  # must not raise on an already-clean dir
+        assert store.is_dir()
+
+
+class TestEncryptionAtRest:
+    """The file fallback should encrypt at rest where the platform can.
+
+    On Windows the 0600/0700 mode bits this module sets are inert -- Windows
+    honours only the read-only attribute -- and fchmod/O_NOFOLLOW do not exist,
+    so the hardening in #1 degrades to almost nothing there. DPAPI is the
+    primitive that platform actually provides.
+
+    The win32crypt calls cannot run here, so these tests exercise the plumbing
+    around them: the availability gate, the prefix, the round trip, and the
+    transparent migration of an existing plaintext file.
+    """
+
+    @pytest.fixture
+    def fake_dpapi(self, monkeypatch):
+        """Stand in for CryptProtectData/CryptUnprotectData with a reversible
+        transform, so the wiring is testable off-Windows."""
+        monkeypatch.setattr(ss_module, "_dpapi_available", lambda: True)
+        monkeypatch.setattr(
+            ss_module,
+            "_dpapi_encrypt",
+            lambda s: ss_module._DPAPI_PREFIX + s[::-1],
+        )
+        monkeypatch.setattr(
+            ss_module,
+            "_dpapi_decrypt",
+            lambda s: s[len(ss_module._DPAPI_PREFIX) :][::-1],
+        )
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        store = tmp_path / "store"
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", store / "token")
+        return store
+
+    def test_dpapi_is_unavailable_off_windows(self):
+        import sys as _sys
+
+        if _sys.platform != "win32":
+            assert ss_module._dpapi_available() is False
+
+    def test_token_is_not_plaintext_on_disk_when_available(self, store, fake_dpapi):
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("super-secret-token")
+
+        on_disk = (store / "token").read_text(encoding="utf-8")
+        assert "super-secret-token" not in on_disk
+        assert on_disk.startswith(ss_module._DPAPI_PREFIX)
+
+    def test_round_trip_through_encryption(self, store, fake_dpapi):
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("super-secret-token")
+        assert session._load_token_file() == "super-secret-token"
+
+    def test_plaintext_stays_plaintext_when_unavailable(self, store, monkeypatch):
+        monkeypatch.setattr(ss_module, "_dpapi_available", lambda: False)
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("super-secret-token")
+        assert (store / "token").read_text(encoding="utf-8") == "super-secret-token"
+        assert session._load_token_file() == "super-secret-token"
+
+    def test_existing_plaintext_file_still_loads_and_is_migrated(
+        self, store, fake_dpapi
+    ):
+        store.mkdir()
+        (store / "token").write_text("legacy-plaintext", encoding="utf-8")
+
+        session = ss_module.SecureMonarchSession()
+        assert session._load_token_file() == "legacy-plaintext"
+
+        migrated = (store / "token").read_text(encoding="utf-8")
+        assert migrated.startswith(ss_module._DPAPI_PREFIX)
+        assert "legacy-plaintext" not in migrated
+
+    def test_undecryptable_payload_returns_none(self, store, monkeypatch, fake_dpapi):
+        def _boom(_s):
+            raise OSError("wrong user or machine")
+
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("super-secret-token")
+        monkeypatch.setattr(ss_module, "_dpapi_decrypt", _boom)
+
+        assert session._load_token_file() is None
+
+
+class TestDeleteLoggingIsAccurate:
+    """_delete_token_file must not claim it deleted a file that was not there.
+
+    unlink(missing_ok=True) never raises on a missing path, so an unguarded
+    `else` branch logs a deletion that did not happen -- which is actively
+    misleading when someone is reading logs to work out why a session was not
+    cleared.
+    """
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        store = tmp_path / "store"
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", store / "token")
+        return store
+
+    def test_logs_deletion_when_a_file_was_removed(self, store, caplog):
+        session = ss_module.SecureMonarchSession()
+        session._save_token_file("a-token")
+
+        with caplog.at_level("INFO", logger=ss_module.logger.name):
+            session._delete_token_file()
+
+        assert any("deleted" in r.message.lower() for r in caplog.records)
+
+    def test_does_not_claim_deletion_when_there_was_no_file(self, store, caplog):
+        store.mkdir()
+        session = ss_module.SecureMonarchSession()
+
+        with caplog.at_level("INFO", logger=ss_module.logger.name):
+            session._delete_token_file()
+
+        claimed = [r.message for r in caplog.records if "deleted" in r.message.lower()]
+        assert not claimed, f"claimed a deletion that did not happen: {claimed}"

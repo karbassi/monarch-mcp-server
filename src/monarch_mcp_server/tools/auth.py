@@ -66,11 +66,17 @@ async def monarch_logout() -> str:
 async def check_auth_status() -> str:
     """Check if already authenticated with Monarch Money."""
     try:
-        token = secure_session.load_token()
-        if token:
-            status = "✅ Authentication token found in secure keyring storage\n"
+        # Ask for the whole session, not just the token: a cookie-mode session
+        # is stored without a `token` key, so load_token() returns None for a
+        # login that works perfectly well.
+        session = secure_session.load_session()
+        if session:
+            mode = session.get("auth_mode") or (
+                "cookie" if session.get("cookies") else "token"
+            )
+            status = f"✅ Authenticated session found (auth_mode={mode})\n"
         else:
-            status = "❌ No authentication token found in keyring\n"
+            status = "❌ No stored session found\n"
 
         email = os.getenv("MONARCH_EMAIL")
         if email:
@@ -89,10 +95,14 @@ async def check_auth_status() -> str:
 async def debug_session_loading() -> str:
     """Debug keyring session loading issues."""
     try:
-        token = secure_session.load_token()
-        if token:
-            return "✅ Token found in keyring."
-        return "❌ No token found in keyring. Run login_setup.py to authenticate."
+        session = secure_session.load_session()
+        if session:
+            mode = session.get("auth_mode") or (
+                "cookie" if session.get("cookies") else "token"
+            )
+            fields = sorted(k for k in session if k != "auth_mode")
+            return f"✅ Session found (auth_mode={mode}, fields={fields})."
+        return "❌ No session found. Run login_setup.py to authenticate."
     except Exception as e:
         logger.exception("Keyring access failed")
         return f"❌ Keyring access failed: {type(e).__name__}: {e}"

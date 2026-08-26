@@ -14,6 +14,7 @@ Supports three auth paths in order of recommendation:
 
 import asyncio
 import getpass
+import os
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ src_path = Path(__file__).parent / "src"
 sys.path.insert(0, str(src_path))
 
 from monarchmoney import CaptchaRequiredException, RequireMFAException
+
 from monarch_mcp_server.monarch_auth import (
     EmailOtpRequiredException,
     create_monarch_client,
@@ -28,6 +30,50 @@ from monarch_mcp_server.monarch_auth import (
     login_with_current_auth,
 )
 from monarch_mcp_server.secure_session import secure_session
+
+
+# Terminals read in canonical mode, where the line buffer is capped at
+# MAX_CANON -- 1024 bytes on macOS. A raw `cookie:` header from app.monarch.com
+# routinely exceeds that once Cloudflare and analytics cookies are in play, so
+# the paste is silently truncated and the login fails with nothing to explain
+# why. Query the tty when we can; 1024 is the POSIX floor otherwise.
+def _canonical_limit() -> int:
+    try:
+        return int(os.pathconf("/dev/tty", "PC_MAX_CANON"))
+    except (OSError, ValueError, AttributeError):
+        return 1024
+
+
+_CANONICAL_LIMIT = _canonical_limit()
+
+
+class CookieInputTruncated(RuntimeError):
+    """The pasted cookie hit the terminal's line limit and was cut off."""
+
+
+def _read_cookie_string() -> str:
+    """Read the browser cookie header, preferring paths that bypass the tty.
+
+    MONARCH_COOKIE, then MONARCH_COOKIE_FILE, then an interactive prompt. The
+    first two exist so a header longer than MAX_CANON can be supplied at all.
+    """
+    from_env = os.environ.get("MONARCH_COOKIE")
+    if from_env and from_env.strip():
+        return from_env.strip()
+
+    path = os.environ.get("MONARCH_COOKIE_FILE")
+    if path and path.strip():
+        return Path(path.strip()).read_text(encoding="utf-8").strip()
+
+    value = getpass.getpass("Paste the Cookie header value: ").strip()
+    if len(value) >= _CANONICAL_LIMIT:
+        raise CookieInputTruncated(
+            f"The pasted value is {len(value)} bytes, at or over this "
+            f"terminal's {_CANONICAL_LIMIT}-byte line limit, so it was almost "
+            "certainly cut off. Write the header to a file and set "
+            "MONARCH_COOKIE_FILE=/path/to/file (or MONARCH_COOKIE=...) instead."
+        )
+    return value
 
 
 async def _login_with_cookies():
@@ -39,7 +85,27 @@ async def _login_with_cookies():
     print("  4. Scroll to 'Request Headers' and find the 'cookie:' header")
     print("  5. Copy the full value (a long string of key=value; pairs)")
     print()
-    cookie_string = getpass.getpass("Paste the Cookie header value: ").strip()
+    print("  (If the header is long, save it to a file and set")
+    print("   MONARCH_COOKIE_FILE=/path/to/file -- terminals truncate")
+    print("   pastes at the MAX_CANON line limit.)")
+    print()
+    try:
+        cookie_string = _read_cookie_string()
+    except CookieInputTruncated as e:
+        print(f"❌ {e}")
+        return None
+    except UnicodeDecodeError as e:
+        # Not an OSError -- UnicodeDecodeError is a ValueError -- so it needs
+        # its own arm or it escapes as a traceback out of a user-facing script.
+        print(
+            f"❌ MONARCH_COOKIE_FILE is not valid UTF-8 "
+            f"({e.reason} at byte {e.start}). A cookie header is ASCII; this "
+            "file is probably not the plain header text."
+        )
+        return None
+    except OSError as e:
+        print(f"❌ Could not read the cookie: {e}")
+        return None
     if not cookie_string:
         print("❌ No cookie string provided. Exiting.")
         return None
@@ -117,6 +183,7 @@ async def main():
 
     try:
         import monarchmoney
+
         print(
             f"📦 MonarchMoney version: "
             f"{getattr(monarchmoney, '__version__', 'unknown')}"
@@ -125,9 +192,14 @@ async def main():
         print(f"⚠️  Could not check version: {e}")
 
     try:
-        secure_session.delete_token()
-        print("🗑️ Cleared existing secure sessions")
-
+        # Deliberately NOT clearing the stored session here. There are five
+        # return paths between this point and save_authenticated_session below
+        # (bad menu choice, login helper returning None, unexpected accounts
+        # payload, failed connection test, failed save) and clearing up front
+        # meant hitting any of them left the user with no session at all.
+        # The clear was redundant anyway: a save replaces the keyring entry
+        # outright and opens the fallback file O_TRUNC, so nothing stale
+        # survives it.
         print("\nHow do you sign in to Monarch Money?")
         print(
             "  1) Session cookies from browser   "
