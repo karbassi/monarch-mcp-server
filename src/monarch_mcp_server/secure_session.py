@@ -57,7 +57,10 @@ def _dpapi_available() -> bool:
     if sys.platform != "win32":
         return False
     try:
-        import win32crypt  # noqa: F401
+        # No stubs ship for win32crypt and it is Windows-only, so mypy reports
+        # it as untyped. The error attaches to the first import of the module,
+        # which is this one.
+        import win32crypt  # type: ignore[import-untyped] # noqa: F401
     except Exception:
         return False
     return True
@@ -65,15 +68,20 @@ def _dpapi_available() -> bool:
 
 def _dpapi_encrypt(plaintext: str) -> str:
     """Encrypt with DPAPI, returning ``DPAPI:<base64>``."""
+    # win32crypt ships no stubs and is Windows-only, so it is untyped here and
+    # not installed at all on this machine. Everything it hands back is Any;
+    # narrow it explicitly rather than leaking that through the return type.
     import win32crypt
 
-    blob = win32crypt.CryptProtectData(
-        plaintext.encode("utf-8"),
-        "monarch-mcp-server session",  # description, not secret
-        None,
-        None,
-        None,
-        0,
+    blob: bytes = bytes(
+        win32crypt.CryptProtectData(
+            plaintext.encode("utf-8"),
+            "monarch-mcp-server session",  # description, not secret
+            None,
+            None,
+            None,
+            0,
+        )
     )
     return _DPAPI_PREFIX + base64.b64encode(blob).decode("ascii")
 
@@ -84,7 +92,8 @@ def _dpapi_decrypt(payload: str) -> str:
 
     raw = base64.b64decode(payload[len(_DPAPI_PREFIX) :])
     _description, data = win32crypt.CryptUnprotectData(raw, None, None, None, 0)
-    return data.decode("utf-8")
+    decoded: str = bytes(data).decode("utf-8")
+    return decoded
 
 
 def _keyring_available() -> bool:
