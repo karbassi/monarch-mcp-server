@@ -304,15 +304,56 @@ def test_exactly_one_tools_toml_is_tracked():
     MONARCH_TOOLS_CONFIG both still override it, in that order -- but neither is
     committed.
     """
+    import shutil
     import subprocess
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent
-    tracked = subprocess.run(
+    if shutil.which("git") is None or not (root / ".git").exists():
+        pytest.skip("needs a git checkout; this guards drift, not runtime behaviour")
+
+    result = subprocess.run(
         ["git", "ls-files", "*tools.toml"],
         cwd=root,
         capture_output=True,
         text=True,
         check=False,
-    ).stdout.split()
-    assert tracked == ["src/monarch_mcp_server/tools.toml"], tracked
+    )
+    if result.returncode != 0:
+        pytest.skip(f"git ls-files failed: {result.stderr.strip()[:80]}")
+    assert result.stdout.split() == ["src/monarch_mcp_server/tools.toml"], result.stdout
+
+
+class TestNotFoundWarningIsAccurate:
+    """The warning must name the path actually attempted.
+
+    It claimed to have "tried" every candidate while the code opens only
+    config_path() -- so with MONARCH_TOOLS_CONFIG set, it listed paths it never
+    touched and omitted the one that was actually missing.
+    """
+
+    def test_names_the_override_path_when_set(self, tmp_path, monkeypatch, caplog):
+        absent = tmp_path / "nope.toml"
+        monkeypatch.setenv(tool_policy.CONFIG_ENV_VAR, str(absent))
+
+        with caplog.at_level("WARNING", logger=tool_policy.logger.name):
+            tool_policy.load_enabled()
+
+        logged = " ".join(r.getMessage() for r in caplog.records)
+        assert str(absent) in logged, "the missing path was not named"
+        # The unsearched shipped candidates must not be presented as "tried".
+        for candidate in tool_policy._CANDIDATES:
+            assert (
+                str(candidate) not in logged
+            ), f"claimed to try {candidate}, which it never opened"
+
+    def test_names_the_candidates_when_no_override(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.delenv(tool_policy.CONFIG_ENV_VAR, raising=False)
+        a, b = tmp_path / "a.toml", tmp_path / "b.toml"
+        monkeypatch.setattr(tool_policy, "_CANDIDATES", (a, b))
+
+        with caplog.at_level("WARNING", logger=tool_policy.logger.name):
+            tool_policy.load_enabled()
+
+        logged = " ".join(r.getMessage() for r in caplog.records)
+        assert str(a) in logged and str(b) in logged

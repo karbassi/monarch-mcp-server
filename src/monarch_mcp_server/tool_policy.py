@@ -173,12 +173,23 @@ def _read_tools_table() -> dict[str, object] | None:
         with open(path, "rb") as fh:
             data = tomllib.load(fh)
     except FileNotFoundError:
-        logger.warning(
-            "tool config not found (tried: %s) — falling back to the built-in "
-            "read-only set, so no write tool is exposed. Set %s to point at one.",
-            ", ".join(str(c) for c in _CANDIDATES),
-            CONFIG_ENV_VAR,
-        )
+        # Name what was actually opened. With the env var set that is the only
+        # path tried, so listing the shipped candidates would be a lie; without
+        # it, every candidate genuinely was checked.
+        if os.environ.get(CONFIG_ENV_VAR):
+            logger.warning(
+                "tool config not found at %s (from %s) — falling back to the "
+                "built-in read-only set, so no write tool is exposed.",
+                path,
+                CONFIG_ENV_VAR,
+            )
+        else:
+            logger.warning(
+                "tool config not found (tried: %s) — falling back to the built-in "
+                "read-only set, so no write tool is exposed. Set %s to point at one.",
+                ", ".join(str(c) for c in _CANDIDATES),
+                CONFIG_ENV_VAR,
+            )
         return None
     except (tomllib.TOMLDecodeError, OSError) as exc:
         logger.error(

@@ -6,7 +6,7 @@
 #
 # This is an allowlist. A tool absent from this file is NOT exposed, which is
 # deliberate: a new tool arriving from upstream stays hidden until classified,
-# rather than being exposed silently. See src/monarch_mcp_server/tool_policy.py
+# rather than being exposed silently. See the monarch_mcp_server.tool_policy module
 # for why classifying by tool name does not work.
 #
 # Set MONARCH_TOOLS_CONFIG to keep your copy outside the checkout.
