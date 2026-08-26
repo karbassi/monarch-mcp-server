@@ -43,11 +43,23 @@ _PROBE_USERNAME = "__keyring_probe__"
 # works and this fallback is only reached when a keyring is absent or throws --
 # so the right response to a missing primitive is a clear refusal, not an
 # AttributeError from deep inside a save.
-_POSIX_PRIMITIVES = ("O_NOFOLLOW", "O_NONBLOCK", "fchmod", "getuid")
+# Open flags must be non-zero to do anything: OR-ing 0 into os.open() enables
+# nothing, which is why the earlier code wrote getattr(os, "O_NOFOLLOW", 0) and
+# treated 0 as absent. With the best-effort prechecks gone there is no backstop,
+# so a falsy flag has to count as missing rather than silently disabling the
+# hardening.
+_POSIX_FLAGS = ("O_NOFOLLOW", "O_NONBLOCK")
+_POSIX_CALLS = ("fchmod", "getuid")
+_POSIX_PRIMITIVES = _POSIX_FLAGS + _POSIX_CALLS
 
 
 def _require_posix_primitives() -> None:
-    missing = [name for name in _POSIX_PRIMITIVES if not hasattr(os, name)]
+    missing = [
+        name
+        for name in _POSIX_FLAGS
+        if not isinstance(getattr(os, name, 0), int) or not getattr(os, name, 0)
+    ]
+    missing += [name for name in _POSIX_CALLS if not callable(getattr(os, name, None))]
     if missing:
         raise OSError(
             "The file-based token fallback needs POSIX primitives that are "
@@ -182,18 +194,26 @@ class SecureMonarchSession:
         with f:
             st = os.fstat(f.fileno())
             if not stat.S_ISREG(st.st_mode):
-                logger.warning(f"⚠️  {_TOKEN_FILE} is not a regular file; refusing to read")
+                logger.warning(
+                    f"⚠️  {_TOKEN_FILE} is not a regular file; refusing to read"
+                )
                 return None
             if st.st_uid != os.getuid():
-                logger.warning(f"⚠️  {_TOKEN_FILE} is owned by another user; refusing to read")
+                logger.warning(
+                    f"⚠️  {_TOKEN_FILE} is owned by another user; refusing to read"
+                )
                 return None
             if st.st_size > _MAX_TOKEN_BYTES:
-                logger.warning(f"⚠️  {_TOKEN_FILE} is larger than a session blob; refusing to read")
+                logger.warning(
+                    f"⚠️  {_TOKEN_FILE} is larger than a session blob; refusing to read"
+                )
                 return None
             # Bounded independently of st_size, which can understate the content.
             token = f.read(_MAX_TOKEN_BYTES + 1)
         if len(token) > _MAX_TOKEN_BYTES:
-            logger.warning(f"⚠️  {_TOKEN_FILE} is larger than a session blob; refusing to read")
+            logger.warning(
+                f"⚠️  {_TOKEN_FILE} is larger than a session blob; refusing to read"
+            )
             return None
         token = token.strip()
         if not token:
@@ -259,6 +279,7 @@ class SecureMonarchSession:
         if self._use_keyring:
             try:
                 import keyring
+
                 keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, blob)
                 logger.info(
                     "✅ Session saved securely to keyring (auth_mode=%s)",
@@ -274,9 +295,7 @@ class SecureMonarchSession:
 
     def save_token(self, token: str, *, device_uuid: Optional[str] = None) -> None:
         """Save a token-mode session. Kept for backward compatibility."""
-        self.save_session_blob(
-            token=token, device_uuid=device_uuid, auth_mode="token"
-        )
+        self.save_session_blob(token=token, device_uuid=device_uuid, auth_mode="token")
 
     def load_token(self) -> Optional[str]:
         """Load just the authentication token from keyring or file fallback."""
@@ -305,6 +324,7 @@ class SecureMonarchSession:
         if self._use_keyring:
             try:
                 import keyring
+
                 raw_session = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
             except Exception as e:
                 logger.warning(f"⚠️  Keyring load failed, trying file fallback: {e}")
@@ -349,6 +369,7 @@ class SecureMonarchSession:
         if self._use_keyring:
             try:
                 import keyring
+
                 keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
                 logger.info("🗑️ Token deleted from keyring")
             except Exception:

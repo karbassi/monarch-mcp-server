@@ -465,7 +465,7 @@ monarch-mcp-server/
 
 ### Session Management
 - Session tokens are stored securely in the system keyring (with an automatic file fallback for environments without a keyring backend)
-- The file fallback is POSIX-only. It relies on `O_NOFOLLOW`, `fchmod` and `getuid` to keep the token owner-only and to refuse a symlink planted at its path, and refuses to run rather than store the token less safely where those are unavailable. This does not affect Windows: Credential Manager works there, so the keyring path is used and the fallback is only reached if a keyring is missing or erroring.
+- The file fallback is POSIX-only. It relies on `O_NOFOLLOW`, `O_NONBLOCK`, `fchmod` and `getuid` to keep the token owner-only, to refuse a symlink planted at its path, and to avoid blocking on a FIFO left there, and refuses to run rather than store the token less safely where those are unavailable. This does not affect Windows: Credential Manager works there, so the keyring path is used and the fallback is only reached if a keyring is missing or erroring.
 - The `device-uuid` captured at login is stored alongside the token so it reloads cleanly
 - Sessions persist across Claude Desktop and Claude Code restarts
 - No need for frequent re-authentication

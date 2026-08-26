@@ -821,7 +821,9 @@ class TestNonPosixFailsCleanly:
         monkeypatch.setattr(ss_module, "_TOKEN_FILE", store / "token")
         return store
 
-    @pytest.mark.parametrize("missing", ["O_NOFOLLOW", "O_NONBLOCK", "fchmod", "getuid"])
+    @pytest.mark.parametrize(
+        "missing", ["O_NOFOLLOW", "O_NONBLOCK", "fchmod", "getuid"]
+    )
     def test_save_refuses_with_a_clear_message(self, store, monkeypatch, missing):
         monkeypatch.delattr(ss_module.os, missing, raising=False)
 
@@ -832,7 +834,9 @@ class TestNonPosixFailsCleanly:
         assert missing in message
         assert "keyring" in message.lower()
 
-    @pytest.mark.parametrize("missing", ["O_NOFOLLOW", "O_NONBLOCK", "fchmod", "getuid"])
+    @pytest.mark.parametrize(
+        "missing", ["O_NOFOLLOW", "O_NONBLOCK", "fchmod", "getuid"]
+    )
     def test_load_returns_none_rather_than_crashing(self, store, monkeypatch, missing):
         store.mkdir()
         (store / "token").write_text("a-token", encoding="utf-8")
@@ -840,3 +844,39 @@ class TestNonPosixFailsCleanly:
 
         # Callers already treat None as "no session"; crashing is the bad case.
         assert ss_module.SecureMonarchSession()._load_token_file() is None
+
+
+class TestPosixPrimitiveGuardIsSubstantive:
+    """Presence is not enough: the guard must confirm the primitives work.
+
+    A flag constant defined as 0 is a no-op -- OR-ing it into os.open() enables
+    nothing -- and the previous code encoded that by writing
+    `getattr(os, "O_NOFOLLOW", 0)` and treating 0 as absent. Since the
+    best-effort prechecks are gone, a falsy flag would now silently disable the
+    hardening with nothing behind it.
+    """
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        store = tmp_path / "store"
+        monkeypatch.setattr(ss_module, "_TOKEN_DIR", store)
+        monkeypatch.setattr(ss_module, "_TOKEN_FILE", store / "token")
+        return store
+
+    @pytest.mark.parametrize("flag", ["O_NOFOLLOW", "O_NONBLOCK"])
+    def test_a_zero_flag_is_treated_as_missing(self, store, monkeypatch, flag):
+        monkeypatch.setattr(ss_module.os, flag, 0)
+
+        with pytest.raises(OSError) as excinfo:
+            ss_module.SecureMonarchSession()._save_token_file("a-token")
+        assert flag in str(excinfo.value)
+
+    @pytest.mark.parametrize("fn", ["fchmod", "getuid"])
+    def test_a_non_callable_primitive_is_treated_as_missing(
+        self, store, monkeypatch, fn
+    ):
+        monkeypatch.setattr(ss_module.os, fn, None)
+
+        with pytest.raises(OSError) as excinfo:
+            ss_module.SecureMonarchSession()._save_token_file("a-token")
+        assert fn in str(excinfo.value)
