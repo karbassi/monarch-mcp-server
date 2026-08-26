@@ -32,12 +32,13 @@ async def get_accounts() -> str:
 
         account_list = []
         for account in accounts.get("accounts", []):
+            subtype = account.get("subtype") or {}
             account_info = {
                 "id": account.get("id"),
                 "name": account.get("displayName") or account.get("name"),
                 "type": (account.get("type") or {}).get("name"),
-                "subtype": (account.get("subtype") or {}).get("name"),
-                "subtype_display": (account.get("subtype") or {}).get("display"),
+                "subtype": subtype.get("name"),
+                "subtype_display": subtype.get("display"),
                 "mask": account.get("mask"),
                 "balance": account.get("currentBalance"),
                 "current_balance": account.get("currentBalance"),
@@ -301,13 +302,13 @@ async def get_institutions() -> str:
                 continue
             credential = account.get("credential") or {}
             key = credential.get("id") or "__manual__"
+            subtype = account.get("subtype") or {}
             accounts_by_credential.setdefault(key, []).append(
                 {
                     "id": account.get("id"),
                     "name": account.get("displayName"),
                     "mask": account.get("mask"),
-                    "subtype": (account.get("subtype") or {}).get("display")
-                    or (account.get("subtype") or {}).get("name"),
+                    "subtype": subtype.get("display") or subtype.get("name"),
                 }
             )
 
