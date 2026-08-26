@@ -5,14 +5,13 @@ Uses the system keyring when available, with an automatic file-based
 fallback for environments without a keyring backend (e.g. WSL, headless Linux).
 """
 
-import base64
 import json
 import logging
 import os
 import stat
-import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
+
 from monarchmoney import MonarchMoney
 
 from monarch_mcp_server.monarch_auth import (
@@ -36,64 +35,6 @@ _MAX_TOKEN_BYTES = 64 * 1024
 
 
 _PROBE_USERNAME = "__keyring_probe__"
-
-
-# --- Encryption at rest for the file fallback -------------------------------
-#
-# On Windows the 0600/0700 mode bits set below are inert -- the platform honours
-# only the read-only attribute -- and neither os.fchmod nor O_NOFOLLOW exists,
-# so the path hardening degrades to a best-effort symlink check. DPAPI
-# (CryptProtectData) is the protection Windows actually offers: per-user, and
-# without Credential Manager's size cap on the blob, which is why a full cookie
-# session ends up in this file in the first place.
-#
-# Elsewhere this is a no-op and the file stays plaintext, still guarded by the
-# 0600 file and 0700 directory.
-_DPAPI_PREFIX = "DPAPI:"
-
-
-def _dpapi_available() -> bool:
-    """True only on Windows with pywin32's win32crypt importable."""
-    if sys.platform != "win32":
-        return False
-    try:
-        # No stubs ship for win32crypt and it is Windows-only, so mypy reports
-        # it as untyped. The error attaches to the first import of the module,
-        # which is this one.
-        import win32crypt  # type: ignore[import-untyped] # noqa: F401
-    except Exception:
-        return False
-    return True
-
-
-def _dpapi_encrypt(plaintext: str) -> str:
-    """Encrypt with DPAPI, returning ``DPAPI:<base64>``."""
-    # win32crypt ships no stubs and is Windows-only, so it is untyped here and
-    # not installed at all on this machine. Everything it hands back is Any;
-    # narrow it explicitly rather than leaking that through the return type.
-    import win32crypt
-
-    blob: bytes = bytes(
-        win32crypt.CryptProtectData(
-            plaintext.encode("utf-8"),
-            "monarch-mcp-server session",  # description, not secret
-            None,
-            None,
-            None,
-            0,
-        )
-    )
-    return _DPAPI_PREFIX + base64.b64encode(blob).decode("ascii")
-
-
-def _dpapi_decrypt(payload: str) -> str:
-    """Reverse :func:`_dpapi_encrypt`."""
-    import win32crypt
-
-    raw = base64.b64decode(payload[len(_DPAPI_PREFIX) :])
-    _description, data = win32crypt.CryptUnprotectData(raw, None, None, None, 0)
-    decoded: str = bytes(data).decode("utf-8")
-    return decoded
 
 
 def _keyring_available() -> bool:
@@ -141,19 +82,17 @@ class SecureMonarchSession:
         O_NOFOLLOW on the token file guards only the final path component. A
         symlinked _TOKEN_DIR redirects both the read and the write into a
         directory someone else controls, and _save_token_file's chmod 0700 then
-        lands on their target. Like the other precheck, this is best-effort:
-        mkdir/open are separate syscalls, so the link could be swapped in
-        afterwards. Closing that properly needs openat(2) against a directory
-        fd, which Python exposes only patchily across platforms.
+        lands on their target.
+
+        This one is genuinely best-effort, unlike the O_NOFOLLOW guards on the
+        file itself: mkdir and open are separate syscalls, so the link could be
+        swapped in between. Closing it properly needs openat(2) against a
+        directory fd, which Python exposes only patchily.
         """
         if _TOKEN_DIR.is_symlink():
             raise OSError(f"{_TOKEN_DIR} is a symlink; refusing to use it")
 
     def _save_token_file(self, token: str) -> None:
-        # Encrypt before anything touches the filesystem, so the plaintext never
-        # reaches the file even transiently.
-        if _dpapi_available():
-            token = _dpapi_encrypt(token)
         self._assert_token_dir_safe()
         _TOKEN_DIR.mkdir(parents=True, exist_ok=True)
         _TOKEN_DIR.chmod(stat.S_IRWXU)  # 700
@@ -163,15 +102,12 @@ class SecureMonarchSession:
         mode = stat.S_IRUSR | stat.S_IWUSR  # 600
         # O_NOFOLLOW refuses a symlink planted at the token path outright, rather
         # than following it and writing the token to an attacker-chosen target.
-        # It is Unix-only (absent on Windows), hence the getattr.
-        nofollow = getattr(os, "O_NOFOLLOW", 0)
-        if not nofollow and _TOKEN_FILE.is_symlink():
-            # Best-effort, and racy by construction: without O_NOFOLLOW there is
-            # no way to make "refuse a symlink" atomic with the open, so the link
-            # could be planted in between. Still worth doing on a platform that
-            # offers no alternative.
-            raise OSError(f"{_TOKEN_FILE} is a symlink; refusing to write")
-        fd = os.open(_TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | nofollow, mode)
+        # Atomic with the open, so there is no window to race.
+        fd = os.open(
+            _TOKEN_FILE,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+            mode,
+        )
         try:
             # O_NOFOLLOW only rejects symlinks, so confirm we really hold a plain
             # file before writing a credential into it — not a device or socket
@@ -180,17 +116,9 @@ class SecureMonarchSession:
                 raise OSError(f"{_TOKEN_FILE} is not a regular file; refusing to write")
             # O_CREAT honors the mode only when creating, so a pre-existing file
             # keeps its old (possibly 0644) mode. Narrow it before any token bytes
-            # land. Prefer fchmod: it targets the open file, so unlike a path-based
-            # chmod it cannot be redirected by a symlink swapped in after the open.
-            fchmod = getattr(os, "fchmod", None)
-            if fchmod is not None:
-                fchmod(fd, mode)
-            else:
-                # Unix-only, like O_NOFOLLOW. Falling back to the path is weaker
-                # for the reason above, but leaving a pre-existing file at its old
-                # mode would be worse, and crashing the whole fallback path worse
-                # still.
-                os.chmod(_TOKEN_FILE, mode)
+            # land. fchmod targets the open file, so unlike a path-based chmod it
+            # cannot be redirected by a symlink swapped in after the open.
+            os.fchmod(fd, mode)
             f = os.fdopen(fd, "w", encoding="utf-8")
         except BaseException:
             os.close(fd)
@@ -211,19 +139,11 @@ class SecureMonarchSession:
         except OSError as e:
             logger.warning(f"⚠️  Refusing to read the token file: {e}")
             return None
-        nofollow = getattr(os, "O_NOFOLLOW", 0)
-        if not nofollow and _TOKEN_FILE.is_symlink():
-            # Best-effort and racy, exactly as in _save_token_file.
-            logger.warning(f"⚠️  {_TOKEN_FILE} is a symlink; refusing to read")
-            return None
         try:
             # O_NONBLOCK so a FIFO left at the path fails the regular-file check
             # below instead of hanging the open forever. It is a no-op for
             # regular files.
-            fd = os.open(
-                _TOKEN_FILE,
-                os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0),
-            )
+            fd = os.open(_TOKEN_FILE, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         except FileNotFoundError:
             return None
         except OSError as e:
@@ -240,8 +160,7 @@ class SecureMonarchSession:
             if not stat.S_ISREG(st.st_mode):
                 logger.warning(f"⚠️  {_TOKEN_FILE} is not a regular file; refusing to read")
                 return None
-            getuid = getattr(os, "getuid", None)  # Unix-only
-            if getuid is not None and st.st_uid != getuid():
+            if st.st_uid != os.getuid():
                 logger.warning(f"⚠️  {_TOKEN_FILE} is owned by another user; refusing to read")
                 return None
             if st.st_size > _MAX_TOKEN_BYTES:
@@ -256,27 +175,7 @@ class SecureMonarchSession:
         if not token:
             return None
 
-        if token.startswith(_DPAPI_PREFIX):
-            try:
-                plaintext = _dpapi_decrypt(token)
-            except Exception as e:
-                # Wrong user, wrong machine, or a corrupt blob. Refusing beats
-                # handing a mangled value to the caller, which would be sent
-                # upstream as a credential.
-                logger.warning(f"⚠️  Could not decrypt {_TOKEN_FILE}: {e}")
-                return None
-            logger.info(f"✅ Token loaded (encrypted at rest) from {_TOKEN_FILE}")
-            return plaintext
-
         logger.info(f"✅ Token loaded from {_TOKEN_FILE}")
-        if _dpapi_available():
-            # Upgrade a file written before encryption was available. Failure
-            # here is not fatal: the value we already read is still good.
-            try:
-                self._save_token_file(token)
-                logger.info("🔐 Migrated the token file to encrypted at rest")
-            except Exception as e:
-                logger.warning(f"⚠️  Could not migrate {_TOKEN_FILE}: {e}")
         return token
 
     def _delete_token_file(self) -> None:
