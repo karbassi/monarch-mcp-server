@@ -444,11 +444,16 @@ async def delete_transaction_rule(rule_id: str) -> str:
         )
 
         # The `deleted` flag is not a success signal and must not be read as
-        # one. Captured live, the payload for a deletion that demonstrably
-        # removed the rule was:
+        # one. Captured live, the full gql_call response for a deletion that
+        # demonstrably removed the rule was:
         #
-        #   {"deleted": false, "errors": null,
-        #    "__typename": "DeleteTransactionRuleV2Mutation"}
+        #   {"deleteTransactionRule": {
+        #        "deleted": false,
+        #        "errors": null,
+        #        "__typename": "DeleteTransactionRuleV2Mutation"}}
+        #
+        # -- i.e. `deleted: false` sits inside the deleteTransactionRule value
+        # that delete_result is bound to just below.
         #
         # ...three times out of three, with the rule gone each time. A genuine
         # failure never arrives as a payload at all: deleting a nonexistent id
