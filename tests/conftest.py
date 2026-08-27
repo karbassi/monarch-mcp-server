@@ -217,8 +217,61 @@ def mock_monarch_client():
                         }
                     ],
                 },
-            ]
+            ],
+            # Present in the real response; get_budgets used to discard all three.
+            "monthlyAmountsForFlexExpense": {
+                "budgetVariability": "flexible",
+                "monthlyAmounts": [
+                    {
+                        "month": "2026-03-01",
+                        "plannedCashFlowAmount": 700.00,
+                        "actualAmount": 505.00,
+                        "remainingAmount": 195.00,
+                        "previousMonthRolloverAmount": 0.00,
+                    }
+                ],
+            },
+            # Each total is a BudgetTotals object, not a scalar -- planned versus
+            # actual is the point of a budget total. Shape taken from the live
+            # response; an earlier version of this fixture modelled them as bare
+            # numbers and the unit tests happily passed against the wrong shape.
+            "totalsByMonth": [
+                {
+                    "month": "2026-03-01",
+                    "totalIncome": {
+                        "plannedAmount": 5000.00,
+                        "actualAmount": 4800.00,
+                        "remainingAmount": 200.00,
+                        "previousMonthRolloverAmount": 0.00,
+                    },
+                    "totalExpenses": {
+                        "plannedAmount": 2200.00,
+                        "actualAmount": 1900.00,
+                        "remainingAmount": 300.00,
+                        "previousMonthRolloverAmount": 0.00,
+                    },
+                    "totalFixedExpenses": {
+                        "plannedAmount": 900.00,
+                        "actualAmount": 880.00,
+                        "remainingAmount": 20.00,
+                        "previousMonthRolloverAmount": 0.00,
+                    },
+                    "totalFlexibleExpenses": {
+                        "plannedAmount": 700.00,
+                        "actualAmount": 505.00,
+                        "remainingAmount": 195.00,
+                        "previousMonthRolloverAmount": 0.00,
+                    },
+                    "totalNonMonthlyExpenses": {
+                        "plannedAmount": 600.00,
+                        "actualAmount": 515.00,
+                        "remainingAmount": 85.00,
+                        "previousMonthRolloverAmount": 0.00,
+                    },
+                }
+            ],
         },
+        "budgetSystem": "fixed_and_flex",
         "categoryGroups": [
             {
                 "id": "grp-1",

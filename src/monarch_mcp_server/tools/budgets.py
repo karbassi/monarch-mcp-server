@@ -10,7 +10,7 @@ from monarchmoney import MonarchMoney
 
 from monarch_mcp_server.app import mcp
 from monarch_mcp_server.client import get_monarch_client
-from monarch_mcp_server.helpers import json_success, json_error
+from monarch_mcp_server.helpers import json_error, json_success
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 # the current API still returns.
 BUDGET_QUERY = gql(
     """
+    fragment budgetTotals on BudgetTotals {
+      plannedAmount
+      actualAmount
+      remainingAmount
+      previousMonthRolloverAmount
+      __typename
+    }
+
     query MCPBudgetData($startDate: Date!, $endDate: Date!) {
       budgetData(startMonth: $startDate, endMonth: $endDate) {
         monthlyAmountsByCategory {
@@ -37,8 +45,30 @@ BUDGET_QUERY = gql(
           }
           __typename
         }
+        monthlyAmountsForFlexExpense {
+          budgetVariability
+          monthlyAmounts {
+            month
+            plannedCashFlowAmount
+            actualAmount
+            remainingAmount
+            previousMonthRolloverAmount
+            __typename
+          }
+          __typename
+        }
+        totalsByMonth {
+          month
+          totalIncome { ...budgetTotals }
+          totalExpenses { ...budgetTotals }
+          totalFixedExpenses { ...budgetTotals }
+          totalFlexibleExpenses { ...budgetTotals }
+          totalNonMonthlyExpenses { ...budgetTotals }
+          __typename
+        }
         __typename
       }
+      budgetSystem
       categoryGroups {
         id
         name
@@ -92,8 +122,8 @@ def format_budget_data(budget_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 }
 
     budget_rows = []
-    monthly_by_category = (
-        budget_data.get("budgetData", {}).get("monthlyAmountsByCategory", [])
+    monthly_by_category = budget_data.get("budgetData", {}).get(
+        "monthlyAmountsByCategory", []
     )
     for category_budget in monthly_by_category:
         category_id = (category_budget.get("category") or {}).get("id")
@@ -114,6 +144,80 @@ def format_budget_data(budget_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return budget_rows
 
 
+def _format_month_amounts(
+    monthly_amounts: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Normalise a monthlyAmounts list to the same keys used for category rows."""
+    return [
+        {
+            "month": amount.get("month"),
+            "planned": amount.get("plannedCashFlowAmount"),
+            "actual": amount.get("actualAmount"),
+            "remaining": amount.get("remainingAmount"),
+            "rollover": amount.get("previousMonthRolloverAmount"),
+        }
+        for amount in monthly_amounts or []
+    ]
+
+
+def format_flex_expense(budget_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The flexible-spending bucket, or None on a fixed-only budget.
+
+    Monarch's fixed-and-flex system tracks a single flexible pool alongside the
+    per-category budgets. It is not a category, so it has no row in
+    format_budget_data -- which is why it was being dropped entirely.
+    """
+    flex = (budget_data.get("budgetData") or {}).get("monthlyAmountsForFlexExpense")
+    if not flex:
+        return None
+    return {
+        "budget_variability": flex.get("budgetVariability"),
+        "months": _format_month_amounts(flex.get("monthlyAmounts")),
+    }
+
+
+#: Monarch returns each monthly total as a BudgetTotals object, not a scalar --
+#: planned versus actual is the whole point of a budget total.
+_TOTALS_FIELDS = {
+    "income": "totalIncome",
+    "expenses": "totalExpenses",
+    "fixed_expenses": "totalFixedExpenses",
+    "flexible_expenses": "totalFlexibleExpenses",
+    "non_monthly_expenses": "totalNonMonthlyExpenses",
+}
+
+
+def _format_budget_totals(totals: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not totals:
+        return None
+    return {
+        "planned": totals.get("plannedAmount"),
+        "actual": totals.get("actualAmount"),
+        "remaining": totals.get("remainingAmount"),
+        "rollover": totals.get("previousMonthRolloverAmount"),
+    }
+
+
+def format_totals_by_month(budget_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Per-month income and the fixed / flexible / non-monthly expense split.
+
+    The split is the point of a fixed-and-flex budget and cannot be
+    reconstructed from the category rows, since non-monthly expenses and the
+    flex pool are not categories.
+    """
+    totals = (budget_data.get("budgetData") or {}).get("totalsByMonth") or []
+    return [
+        {
+            "month": total.get("month"),
+            **{
+                out_key: _format_budget_totals(total.get(api_key))
+                for out_key, api_key in _TOTALS_FIELDS.items()
+            },
+        }
+        for total in totals
+    ]
+
+
 @mcp.tool()
 async def get_budgets(
     start_date: Optional[str] = None,
@@ -127,15 +231,36 @@ async def get_budgets(
         end_date: End month in YYYY-MM-DD format (defaults to the current month)
 
     Returns:
-        A JSON list with one row per budgeted category per month. Each row has:
-        ``id`` (category id), ``name`` (category name), ``planned`` (planned
-        cash-flow amount), ``actual`` (actual amount), ``remaining``,
-        ``category_group`` (group name), and ``month`` (YYYY-MM-DD).
+        A JSON object with:
+
+        ``categories``
+            One row per budgeted category per month, each with ``id``, ``name``,
+            ``planned`` (planned cash-flow amount), ``actual``, ``remaining``,
+            ``category_group`` and ``month`` (YYYY-MM-DD).
+        ``budget_system``
+            Monarch's budgeting mode, e.g. ``fixed_and_flex`` or ``fixed``.
+        ``flex_expense``
+            The flexible-spending pool, or ``null`` on a fixed-only budget.
+        ``totals_by_month``
+            Per-month income and the fixed / flexible / non-monthly expense
+            split, which cannot be derived from ``categories``.
+
+        This replaced a bare list of category rows. The flex pool, the monthly
+        totals and the budget system are all budget-level rather than
+        per-category, so a flat list could not carry them -- and Monarch was
+        returning all three already.
     """
     try:
         client = await get_monarch_client()
         budget_data = await get_budget_data(client, start_date, end_date)
-        return json_success(format_budget_data(budget_data))
+        return json_success(
+            {
+                "categories": format_budget_data(budget_data),
+                "budget_system": budget_data.get("budgetSystem"),
+                "flex_expense": format_flex_expense(budget_data),
+                "totals_by_month": format_totals_by_month(budget_data),
+            }
+        )
     except Exception as e:
         return json_error("get_budgets", e)
 
@@ -176,16 +301,20 @@ async def set_budget_amount(
     """
     try:
         if category_id and category_group_id:
-            return json_success({
-                "success": False,
-                "error": "Cannot specify both category_id and category_group_id. Choose one."
-            })
+            return json_success(
+                {
+                    "success": False,
+                    "error": "Cannot specify both category_id and category_group_id. Choose one.",
+                }
+            )
 
         if not category_id and not category_group_id:
-            return json_success({
-                "success": False,
-                "error": "Must specify either category_id or category_group_id."
-            })
+            return json_success(
+                {
+                    "success": False,
+                    "error": "Must specify either category_id or category_group_id.",
+                }
+            )
 
         client = await get_monarch_client()
 
@@ -203,10 +332,13 @@ async def set_budget_amount(
 
         result = await client.set_budget_amount(**params)
 
-        return json_success({
-            "success": True,
-            "message": f"Budget set to ${amount:.2f}" + (" for all future months" if apply_to_future else ""),
-            "result": result
-        })
+        return json_success(
+            {
+                "success": True,
+                "message": f"Budget set to ${amount:.2f}"
+                + (" for all future months" if apply_to_future else ""),
+                "result": result,
+            }
+        )
     except Exception as e:
         return json_error("set_budget_amount", e)
