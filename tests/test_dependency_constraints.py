@@ -15,9 +15,11 @@ _ROOT = Path(__file__).resolve().parent.parent
 
 # Known-good and known-bad mcp releases, established empirically rather than
 # derived from the constraint under test:
-#   1.13.1 -- what the lockfile resolves to today; the suite passes on it.
+#   1.29.1 -- what the lockfile resolves to; the suite passes on it. This is the
+#             newest 1.x, and upstream's own advice for anyone not yet on 2.x is
+#             `mcp>=1.28,<2`, since 1.x now receives security fixes only.
 #   2.1.0  -- `from mcp.server.fastmcp import FastMCP` raises ModuleNotFoundError.
-MCP_RUNNABLE = "1.13.1"
+MCP_RUNNABLE = "1.29.1"
 MCP_BROKEN = "2.1.0"
 
 
