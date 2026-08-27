@@ -7,7 +7,7 @@ from gql import gql
 
 from monarch_mcp_server.app import mcp
 from monarch_mcp_server.client import get_monarch_client
-from monarch_mcp_server.helpers import json_success, json_error
+from monarch_mcp_server.helpers import json_error, json_success
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 # GraphQL constants
 # ---------------------------------------------------------------------------
 
-GET_TRANSACTION_RULES_QUERY = gql("""
+GET_TRANSACTION_RULES_QUERY = gql(
+    """
 query GetTransactionRules {
   transactionRules {
     id
@@ -89,9 +90,11 @@ query GetTransactionRules {
     __typename
   }
 }
-""")
+"""
+)
 
-CREATE_TRANSACTION_RULE_MUTATION = gql("""
+CREATE_TRANSACTION_RULE_MUTATION = gql(
+    """
 mutation Common_CreateTransactionRuleMutationV2($input: CreateTransactionRuleInput!) {
   createTransactionRuleV2(input: $input) {
     errors {
@@ -107,9 +110,11 @@ mutation Common_CreateTransactionRuleMutationV2($input: CreateTransactionRuleInp
     __typename
   }
 }
-""")
+"""
+)
 
-UPDATE_TRANSACTION_RULE_MUTATION = gql("""
+UPDATE_TRANSACTION_RULE_MUTATION = gql(
+    """
 mutation Common_UpdateTransactionRuleMutationV2($input: UpdateTransactionRuleInput!) {
   updateTransactionRuleV2(input: $input) {
     errors {
@@ -125,9 +130,11 @@ mutation Common_UpdateTransactionRuleMutationV2($input: UpdateTransactionRuleInp
     __typename
   }
 }
-""")
+"""
+)
 
-DELETE_TRANSACTION_RULE_MUTATION = gql("""
+DELETE_TRANSACTION_RULE_MUTATION = gql(
+    """
 mutation Common_DeleteTransactionRule($id: ID!) {
   deleteTransactionRule(id: $id) {
     deleted
@@ -144,7 +151,8 @@ mutation Common_DeleteTransactionRule($id: ID!) {
     __typename
   }
 }
-""")
+"""
+)
 
 # ---------------------------------------------------------------------------
 # Tools
@@ -178,19 +186,33 @@ async def get_transaction_rules() -> str:
                 "amount_criteria": rule.get("amountCriteria"),
                 "category_ids": rule.get("categoryIds"),
                 "account_ids": rule.get("accountIds"),
-                "use_original_statement": rule.get("merchantCriteriaUseOriginalStatement"),
-                "set_category_action": {
-                    "id": rule.get("setCategoryAction", {}).get("id"),
-                    "name": rule.get("setCategoryAction", {}).get("name"),
-                } if rule.get("setCategoryAction") else None,
-                "set_merchant_action": {
-                    "id": rule.get("setMerchantAction", {}).get("id"),
-                    "name": rule.get("setMerchantAction", {}).get("name"),
-                } if rule.get("setMerchantAction") else None,
-                "add_tags_action": [
-                    {"id": tag.get("id"), "name": tag.get("name")}
-                    for tag in rule.get("addTagsAction", [])
-                ] if rule.get("addTagsAction") else None,
+                "use_original_statement": rule.get(
+                    "merchantCriteriaUseOriginalStatement"
+                ),
+                "set_category_action": (
+                    {
+                        "id": rule.get("setCategoryAction", {}).get("id"),
+                        "name": rule.get("setCategoryAction", {}).get("name"),
+                    }
+                    if rule.get("setCategoryAction")
+                    else None
+                ),
+                "set_merchant_action": (
+                    {
+                        "id": rule.get("setMerchantAction", {}).get("id"),
+                        "name": rule.get("setMerchantAction", {}).get("name"),
+                    }
+                    if rule.get("setMerchantAction")
+                    else None
+                ),
+                "add_tags_action": (
+                    [
+                        {"id": tag.get("id"), "name": tag.get("name")}
+                        for tag in rule.get("addTagsAction", [])
+                    ]
+                    if rule.get("addTagsAction")
+                    else None
+                ),
                 "link_goal_action": rule.get("linkGoalAction"),
                 "hide_from_reports_action": rule.get("setHideFromReportsAction"),
                 "review_status_action": rule.get("reviewStatusAction"),
@@ -421,19 +443,23 @@ async def delete_transaction_rule(rule_id: str) -> str:
             variables={"id": rule_id},
         )
 
-        # Monarch's deleteTransactionRule can return a payload where the
-        # `deleted` flag is absent/null even when the deletion succeeded, which
-        # previously produced a false "Unknown error". Treat an explicit errors
-        # payload (or deleted == False) as failure; otherwise the mutation was
-        # accepted and the rule is gone.
+        # The `deleted` flag is not a success signal and must not be read as
+        # one. Captured live, the payload for a deletion that demonstrably
+        # removed the rule was:
+        #
+        #   {"deleted": false, "errors": null,
+        #    "__typename": "DeleteTransactionRuleV2Mutation"}
+        #
+        # ...three times out of three, with the rule gone each time. A genuine
+        # failure never arrives as a payload at all: deleting a nonexistent id
+        # raises TransportQueryError ("Not found"), handled by the except below.
+        # So keying off `deleted` only ever produced a false negative, which is
+        # what upstream #86 reported.
         delete_result = result.get("deleteTransactionRule") or {}
 
         errors = delete_result.get("errors")
         if errors:
             return json_success({"success": False, "errors": errors})
-
-        if delete_result.get("deleted") is False:
-            return json_success({"success": False, "message": "Rule was not deleted"})
 
         return json_success({"success": True, "message": "Rule deleted successfully"})
     except Exception as e:
