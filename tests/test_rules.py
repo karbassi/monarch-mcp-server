@@ -1,21 +1,22 @@
 """Tests for transaction rules MCP tools."""
 
 import json
-import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
+
+from gql.transport.exceptions import TransportQueryError
 
 from monarch_mcp_server.tools.rules import (
-    get_transaction_rules,
     create_transaction_rule,
-    update_transaction_rule,
     delete_transaction_rule,
+    get_transaction_rules,
+    update_transaction_rule,
 )
 
 
 class TestGetTransactionRules:
     """Tests for get_transaction_rules tool."""
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_get_rules_success(self, mock_get_client):
         """Test successful retrieval of transaction rules."""
         mock_client = AsyncMock()
@@ -25,9 +26,7 @@ class TestGetTransactionRules:
                     "id": "rule_1",
                     "order": 0,
                     "merchantCriteriaUseOriginalStatement": False,
-                    "merchantCriteria": [
-                        {"operator": "contains", "value": "amazon"}
-                    ],
+                    "merchantCriteria": [{"operator": "contains", "value": "amazon"}],
                     "merchantNameCriteria": None,
                     "originalStatementCriteria": None,
                     "amountCriteria": None,
@@ -60,7 +59,7 @@ class TestGetTransactionRules:
         assert rules[0]["set_category_action"]["name"] == "Shopping"
         assert rules[0]["add_tags_action"][0]["name"] == "Online"
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_get_rules_empty(self, mock_get_client):
         """Test when no rules exist."""
         mock_client = AsyncMock()
@@ -72,7 +71,7 @@ class TestGetTransactionRules:
         rules = json.loads(result)
         assert len(rules) == 0
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_get_rules_error(self, mock_get_client):
         """Test error handling."""
         mock_get_client.side_effect = RuntimeError("Auth needed")
@@ -87,7 +86,7 @@ class TestGetTransactionRules:
 class TestCreateTransactionRule:
     """Tests for create_transaction_rule tool."""
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_create_rule_simple(self, mock_get_client):
         """Test creating a simple merchant-to-category rule."""
         mock_client = AsyncMock()
@@ -99,7 +98,7 @@ class TestCreateTransactionRule:
         result = await create_transaction_rule(
             merchant_criteria_operator="contains",
             merchant_criteria_value="amazon",
-            set_category_id="cat_123"
+            set_category_id="cat_123",
         )
 
         data = json.loads(result)
@@ -112,7 +111,7 @@ class TestCreateTransactionRule:
         assert variables["input"]["merchantNameCriteria"][0]["value"] == "amazon"
         assert variables["input"]["setCategoryAction"] == "cat_123"
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_create_rule_with_amount(self, mock_get_client):
         """Test creating a rule with amount criteria."""
         mock_client = AsyncMock()
@@ -127,7 +126,7 @@ class TestCreateTransactionRule:
             amount_operator="lt",
             amount_value=50.0,
             amount_is_expense=True,
-            set_category_id="cat_transport"
+            set_category_id="cat_transport",
         )
 
         data = json.loads(result)
@@ -139,7 +138,7 @@ class TestCreateTransactionRule:
         assert variables["input"]["amountCriteria"]["value"] == 50.0
         assert variables["input"]["amountCriteria"]["isExpense"] is True
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_create_rule_with_tags(self, mock_get_client):
         """Test creating a rule that adds tags."""
         mock_client = AsyncMock()
@@ -151,7 +150,7 @@ class TestCreateTransactionRule:
         result = await create_transaction_rule(
             merchant_criteria_operator="eq",
             merchant_criteria_value="netflix",
-            add_tag_ids=["tag_1", "tag_2"]
+            add_tag_ids=["tag_1", "tag_2"],
         )
 
         data = json.loads(result)
@@ -161,16 +160,13 @@ class TestCreateTransactionRule:
         variables = call_args.kwargs["variables"]
         assert variables["input"]["addTagsAction"] == ["tag_1", "tag_2"]
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_create_rule_error(self, mock_get_client):
         """Test error handling when creation fails."""
         mock_client = AsyncMock()
         mock_client.gql_call.return_value = {
             "createTransactionRuleV2": {
-                "errors": {
-                    "message": "Invalid category ID",
-                    "code": "INVALID_INPUT"
-                }
+                "errors": {"message": "Invalid category ID", "code": "INVALID_INPUT"}
             }
         }
         mock_get_client.return_value = mock_client
@@ -178,14 +174,14 @@ class TestCreateTransactionRule:
         result = await create_transaction_rule(
             merchant_criteria_operator="contains",
             merchant_criteria_value="test",
-            set_category_id="invalid_cat"
+            set_category_id="invalid_cat",
         )
 
         data = json.loads(result)
         assert data["success"] is False
         assert data["errors"] is not None
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_create_rule_with_multiple_merchant_values(self, mock_get_client):
         """Test creating a rule that matches multiple merchants in one rule."""
         mock_client = AsyncMock()
@@ -197,7 +193,7 @@ class TestCreateTransactionRule:
         result = await create_transaction_rule(
             merchant_criteria_operator="contains",
             merchant_criteria_values=["american education services", "origin aes"],
-            set_category_id="cat_student_loans"
+            set_category_id="cat_student_loans",
         )
 
         data = json.loads(result)
@@ -206,10 +202,13 @@ class TestCreateTransactionRule:
         call_args = mock_client.gql_call.call_args
         criteria = call_args.kwargs["variables"]["input"]["merchantNameCriteria"]
         assert len(criteria) == 2
-        assert criteria[0] == {"operator": "contains", "value": "american education services"}
+        assert criteria[0] == {
+            "operator": "contains",
+            "value": "american education services",
+        }
         assert criteria[1] == {"operator": "contains", "value": "origin aes"}
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_create_rule_multiple_values_default_operator(self, mock_get_client):
         """merchant_criteria_values should default to the 'contains' operator."""
         mock_client = AsyncMock()
@@ -234,7 +233,7 @@ class TestCreateTransactionRule:
 class TestUpdateTransactionRule:
     """Tests for update_transaction_rule tool."""
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_update_rule_success(self, mock_get_client):
         """Test successful rule update."""
         mock_client = AsyncMock()
@@ -247,7 +246,7 @@ class TestUpdateTransactionRule:
             rule_id="rule_123",
             merchant_criteria_operator="contains",
             merchant_criteria_value="amazon prime",
-            set_category_id="cat_456"
+            set_category_id="cat_456",
         )
 
         data = json.loads(result)
@@ -257,27 +256,25 @@ class TestUpdateTransactionRule:
         variables = call_args.kwargs["variables"]
         assert variables["input"]["id"] == "rule_123"
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_update_rule_error(self, mock_get_client):
         """Test error handling when update fails."""
         mock_client = AsyncMock()
         mock_client.gql_call.return_value = {
-            "updateTransactionRuleV2": {
-                "errors": {"message": "Rule not found"}
-            }
+            "updateTransactionRuleV2": {"errors": {"message": "Rule not found"}}
         }
         mock_get_client.return_value = mock_client
 
         result = await update_transaction_rule(
             rule_id="invalid_rule",
             merchant_criteria_operator="eq",
-            merchant_criteria_value="test"
+            merchant_criteria_value="test",
         )
 
         data = json.loads(result)
         assert data["success"] is False
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_update_rule_with_multiple_merchant_values(self, mock_get_client):
         """Test updating a rule to match multiple merchants in one rule."""
         mock_client = AsyncMock()
@@ -290,7 +287,7 @@ class TestUpdateTransactionRule:
             rule_id="rule_123",
             merchant_criteria_operator="contains",
             merchant_criteria_values=["courtyard", "hotel"],
-            set_category_id="cat_hotel"
+            set_category_id="cat_hotel",
         )
 
         data = json.loads(result)
@@ -304,15 +301,12 @@ class TestUpdateTransactionRule:
 class TestDeleteTransactionRule:
     """Tests for delete_transaction_rule tool."""
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_delete_rule_success(self, mock_get_client):
         """Test successful rule deletion."""
         mock_client = AsyncMock()
         mock_client.gql_call.return_value = {
-            "deleteTransactionRule": {
-                "deleted": True,
-                "errors": None
-            }
+            "deleteTransactionRule": {"deleted": True, "errors": None}
         }
         mock_get_client.return_value = mock_client
 
@@ -322,14 +316,23 @@ class TestDeleteTransactionRule:
         assert data["success"] is True
         assert "deleted" in data["message"].lower()
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
-    async def test_delete_rule_not_found(self, mock_get_client):
-        """Test deletion when rule doesn't exist."""
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
+    async def test_delete_rule_with_an_errors_payload_is_a_failure(
+        self, mock_get_client
+    ):
+        """An errors payload means failure -- whatever `deleted` says.
+
+        Renamed from test_delete_rule_not_found: a real missing rule does not
+        come back as a payload at all, it raises TransportQueryError ("Not
+        found"), which test_a_transport_error_is_still_reported covers. This
+        case is a well-formed response carrying errors, which is the only signal
+        in the payload that means anything.
+        """
         mock_client = AsyncMock()
         mock_client.gql_call.return_value = {
             "deleteTransactionRule": {
                 "deleted": False,
-                "errors": {"message": "Rule not found"}
+                "errors": {"message": "Rule not found"},
             }
         }
         mock_get_client.return_value = mock_client
@@ -339,7 +342,7 @@ class TestDeleteTransactionRule:
         data = json.loads(result)
         assert data["success"] is False
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_delete_rule_error(self, mock_get_client):
         """Test error handling."""
         mock_get_client.side_effect = RuntimeError("API error")
@@ -350,14 +353,12 @@ class TestDeleteTransactionRule:
         assert data["error"] is True
         assert "API error" in data["message"]
 
-    @patch('monarch_mcp_server.tools.rules.get_monarch_client')
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_delete_rule_success_without_deleted_flag(self, mock_get_client):
         """Monarch omits the `deleted` flag on success; absence of errors
         should be treated as a successful deletion, not 'Unknown error'."""
         mock_client = AsyncMock()
-        mock_client.gql_call.return_value = {
-            "deleteTransactionRule": {"errors": None}
-        }
+        mock_client.gql_call.return_value = {"deleteTransactionRule": {"errors": None}}
         mock_get_client.return_value = mock_client
 
         result = await delete_transaction_rule(rule_id="rule_123")
@@ -365,3 +366,70 @@ class TestDeleteTransactionRule:
         data = json.loads(result)
         assert data["success"] is True
         assert "deleted" in data["message"].lower()
+
+
+class TestDeleteRuleReportsTruthfully:
+    """Monarch returns `deleted: false, errors: null` on a SUCCESSFUL deletion.
+
+    Captured live -- the raw payload for a delete that demonstrably removed the
+    rule was:
+
+        {"deleteTransactionRule": {"deleted": false, "errors": null,
+                                   "__typename": "DeleteTransactionRuleV2Mutation"}}
+
+    ...and the rule was gone, three times out of three. A genuine failure does
+    not come back as a payload at all: deleting a nonexistent id raises
+    TransportQueryError ("Not found"), which the except branch already handles.
+    So `deleted is False` never indicates a real failure and only ever produces
+    a false negative.
+    """
+
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
+    async def test_deleted_false_with_no_errors_is_success(self, mock_get_client):
+        mock_client = AsyncMock()
+        mock_client.gql_call.return_value = {
+            "deleteTransactionRule": {
+                "deleted": False,
+                "errors": None,
+                "__typename": "DeleteTransactionRuleV2Mutation",
+            }
+        }
+        mock_get_client.return_value = mock_client
+
+        data = json.loads(await delete_transaction_rule(rule_id="rule_123"))
+        assert (
+            data["success"] is True
+        ), "a live-captured successful deletion was reported as a failure"
+
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
+    async def test_an_errors_payload_is_still_a_failure(self, mock_get_client):
+        mock_client = AsyncMock()
+        mock_client.gql_call.return_value = {
+            "deleteTransactionRule": {
+                "deleted": False,
+                "errors": {"message": "nope", "code": "FORBIDDEN"},
+            }
+        }
+        mock_get_client.return_value = mock_client
+
+        data = json.loads(await delete_transaction_rule(rule_id="rule_123"))
+        assert data["success"] is False
+        assert data["errors"]["code"] == "FORBIDDEN"
+
+    @patch("monarch_mcp_server.tools.rules.get_monarch_client")
+    async def test_a_transport_error_is_still_reported(self, mock_get_client):
+        """How a real not-found actually surfaces.
+
+        Raises the exception type the client really raises rather than a
+        stand-in, so this stays true if the handling narrows from
+        `except Exception` to something specific.
+        """
+        mock_client = AsyncMock()
+        mock_client.gql_call.side_effect = TransportQueryError(
+            {"message": "Not found", "path": ["deleteTransactionRule"]}
+        )
+        mock_get_client.return_value = mock_client
+
+        data = json.loads(await delete_transaction_rule(rule_id="bogus"))
+        assert data["error"] is True
+        assert "Not found" in data["message"]
