@@ -83,6 +83,8 @@ READ_TOOLS = frozenset(
         "get_accounts",
         "get_account_holdings",
         "get_account_balance_history",
+        "get_institutions",
+        "get_recent_account_balances",
         # net worth / cashflow / summaries
         "get_net_worth",
         "get_net_worth_by_account_type",
@@ -98,6 +100,8 @@ READ_TOOLS = frozenset(
         "get_category_details",
         # merchants
         "get_merchant",
+        # credit
+        "get_credit_history",
         # rules
         "get_transaction_rules",
         # tags
@@ -109,6 +113,8 @@ READ_TOOLS = frozenset(
         "get_recurring_transactions",
         "search_transactions",
         "get_transaction_splits",
+        # Reports duplicates only; deleting them is delete_transaction, withheld.
+        "find_duplicate_transactions",
     }
 )
 

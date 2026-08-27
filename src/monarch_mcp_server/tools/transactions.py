@@ -1052,3 +1052,55 @@ async def get_transactions_needing_review(
         return json_success(transaction_list)
     except Exception as e:
         return json_error("get_transactions_needing_review", e)
+
+
+@mcp.tool()
+async def find_duplicate_transactions(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> str:
+    """
+    Find groups of transactions that look like duplicates.
+
+    Duplicates arise when an account is re-linked or a manual import overlaps
+    synced data, and they quietly distort every total. This only reports them --
+    deleting is a separate, withheld tool.
+
+    Args:
+        start_date: Earliest date to scan, YYYY-MM-DD.
+        end_date: Latest date to scan, YYYY-MM-DD.
+
+    Returns:
+        One entry per suspected duplicate group.
+    """
+    try:
+        client = await get_monarch_client()
+        groups = await client.find_duplicate_transactions(
+            start_date=start_date, end_date=end_date
+        )
+
+        found = []
+        for group in groups or []:
+            members = group.get("transactions") or []
+            found.append(
+                {
+                    "date": group.get("date"),
+                    "amount": group.get("amount"),
+                    "account_id": group.get("account_id"),
+                    "account_name": group.get("account_name"),
+                    "statement_name": group.get("plaidName"),
+                    "count": len(members),
+                    "transaction_ids": [t.get("id") for t in members if t.get("id")],
+                }
+            )
+
+        return json_success(
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "group_count": len(found),
+                "duplicate_groups": found,
+            }
+        )
+    except Exception as e:
+        return json_error("find_duplicate_transactions", e)

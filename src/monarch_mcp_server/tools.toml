@@ -26,6 +26,8 @@ setup_authentication = true
 get_accounts = true
 get_account_holdings = true
 get_account_balance_history = true
+get_institutions = true
+get_recent_account_balances = true
 
 # Net worth, cashflow, summaries
 get_net_worth = true
@@ -46,6 +48,9 @@ get_category_details = true
 # Merchants
 get_merchant = true
 
+# Credit
+get_credit_history = true
+
 # Rules
 get_transaction_rules = true
 
@@ -59,6 +64,8 @@ get_transactions_needing_review = true
 get_recurring_transactions = true
 search_transactions = true
 get_transaction_splits = true
+# Reports duplicates only; deleting is delete_transaction, below.
+find_duplicate_transactions = true
 
 # ==========================================================================
 # WRITES AND SIDE EFFECTS — withheld by default
