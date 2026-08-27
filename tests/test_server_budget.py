@@ -1,3 +1,5 @@
+import re
+
 from monarch_mcp_server.tools.budgets import BUDGET_QUERY, format_budget_data
 
 
@@ -16,7 +18,11 @@ def test_budget_query_avoids_stale_category_group_fields():
     """
     query_text = BUDGET_QUERY.document.loc.source.body
 
-    start = query_text.index("categoryGroups {")
+    opening = re.search(r"categoryGroups\s*\{", query_text)
+    assert (
+        opening is not None
+    ), f"no categoryGroups selection found in the query:\n{query_text}"
+    start = opening.start()
     depth, end = 0, None
     for i, char in enumerate(query_text[start:], start):
         if char == "{":
@@ -73,3 +79,46 @@ def test_format_budget_data_returns_current_month_category_rows():
             "month": "2026-06-01",
         }
     ]
+
+
+def test_budget_query_selects_everything_the_formatter_reads():
+    """The query must request the fields get_budgets formats.
+
+    This exists because of a mistake made while adding the flex support: the
+    formatter was extended first and the tests passed against a hand-written
+    fixture, while the live call returned nothing because BUDGET_QUERY never
+    selected the fields. Fixture-driven tests cannot catch that -- they never
+    see the query -- so assert the selection directly.
+    """
+    query_text = BUDGET_QUERY.document.loc.source.body
+
+    required = [
+        # budget-level data, none of it per-category
+        "monthlyAmountsForFlexExpense",
+        "budgetVariability",
+        "totalsByMonth",
+        "budgetSystem",
+        # the five monthly buckets the formatter maps
+        "totalIncome",
+        "totalExpenses",
+        "totalFixedExpenses",
+        "totalFlexibleExpenses",
+        "totalNonMonthlyExpenses",
+        # the BudgetTotals scalars each bucket is unwrapped into
+        "plannedAmount",
+        "actualAmount",
+        "remainingAmount",
+        "previousMonthRolloverAmount",
+    ]
+    # Whole-token match: a plain substring check cannot tell
+    # `monthlyAmountsForFlexExpense` from `monthlyAmountsForFlexExpenseXX`, which
+    # is how a first version of this test passed against a renamed field.
+    missing = [
+        field
+        for field in required
+        if not re.search(rf"\b{re.escape(field)}\b(?![A-Za-z0-9_])", query_text)
+    ]
+    assert not missing, (
+        f"BUDGET_QUERY does not select {missing}; get_budgets formats these, so "
+        f"a live call would return them as null while fixture tests still pass"
+    )
