@@ -3,6 +3,8 @@
 import json
 from unittest.mock import AsyncMock, patch
 
+from gql.transport.exceptions import TransportQueryError
+
 from monarch_mcp_server.tools.rules import (
     create_transaction_rule,
     delete_transaction_rule,
@@ -416,9 +418,16 @@ class TestDeleteRuleReportsTruthfully:
 
     @patch("monarch_mcp_server.tools.rules.get_monarch_client")
     async def test_a_transport_error_is_still_reported(self, mock_get_client):
-        """How a real not-found actually surfaces."""
+        """How a real not-found actually surfaces.
+
+        Raises the exception type the client really raises rather than a
+        stand-in, so this stays true if the handling narrows from
+        `except Exception` to something specific.
+        """
         mock_client = AsyncMock()
-        mock_client.gql_call.side_effect = RuntimeError("Not found")
+        mock_client.gql_call.side_effect = TransportQueryError(
+            {"message": "Not found", "path": ["deleteTransactionRule"]}
+        )
         mock_get_client.return_value = mock_client
 
         data = json.loads(await delete_transaction_rule(rule_id="bogus"))
