@@ -6,17 +6,18 @@ the protocol — they never appear in tool arguments or the model's context.
 
 from __future__ import annotations
 
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 from monarchmoney import MonarchMoney, RequireMFAException
 from pydantic import BaseModel, Field
 
 from monarch_mcp_server.secure_session import secure_session
 
-
 _UPGRADE_HINT = (
-    "Elicitation requires the MCP Python SDK >= 1.10.0 (added in June 2025). "
-    "Your MCP server install appears to be running an older version that does "
-    "not expose Context.elicit. Upgrade the `mcp` package, then restart your "
+    "Elicitation requires an MCP Python SDK that exposes Context.elicit. This "
+    "project requires mcp >= 2.1, where it is always present, so reaching this "
+    "message means the running install is older than the declared floor -- "
+    "usually a stale resolved environment rather than a missing feature. "
+    "Upgrade the `mcp` package, then restart your "
     "MCP client. If you launch via `uv run --with mcp[cli]`, run `uv cache "
     "clean mcp` first so a fresh version is resolved. As a fallback, run "
     "`python login_setup.py` from the repo to authenticate via terminal."
@@ -48,7 +49,9 @@ class TokenForm(BaseModel):
 async def login_interactive(ctx: Context) -> str:
     if not _elicit_supported(ctx):
         return _UPGRADE_HINT
-    form_result = await ctx.elicit(message="Sign in to Monarch Money.", schema=LoginForm)
+    form_result = await ctx.elicit(
+        message="Sign in to Monarch Money.", schema=LoginForm
+    )
     if form_result.action != "accept":
         return "Login cancelled."
     form = form_result.data

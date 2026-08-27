@@ -1,8 +1,13 @@
 """The declared dependency constraints must exclude releases we cannot run.
 
-These are not style checks. `mcp` 2.x removed `mcp.server.fastmcp`, which
-`monarch_mcp_server.app` imports at module scope, so an unbounded `mcp` floor
-means a fresh install resolves to a version where the server cannot start.
+These are not style checks. The server imports its MCP entry point at module
+scope, so a constraint admitting an incompatible major means a fresh install
+resolves to a version where the server cannot start.
+
+The direction of this test flipped when the server migrated to the 2.x SDK: 1.x
+is now the incompatible line, because `mcp.server.mcpserver` does not exist
+there. It was the tripwire that made the migration deliberate rather than
+accidental, and it stays pointed at whichever major the server does not support.
 """
 
 import tomllib
@@ -15,15 +20,15 @@ _ROOT = Path(__file__).resolve().parent.parent
 
 # Known-good and known-bad mcp releases, established empirically rather than
 # derived from the constraint under test:
-#   1.29.1 -- the version the lockfile resolves to and the suite passes on.
-#             Deliberately not described as "the newest 1.x": that would go stale
-#             on the next maintenance release, in a file whose whole purpose is
-#             not drifting. The declared floor is `>=1.28`, which is upstream's
-#             own advice for anyone not yet on 2.x, since 1.x receives security
-#             fixes only.
-#   2.1.0  -- `from mcp.server.fastmcp import FastMCP` raises ModuleNotFoundError.
-MCP_RUNNABLE = "1.29.1"
-MCP_BROKEN = "2.1.0"
+#   2.1.1  -- the version the lockfile resolves to and the suite passes on.
+#   1.29.1 -- a 1.x release, and now the broken side: `mcp.server.mcpserver`
+#             does not exist anywhere in 1.x, so the server cannot import its
+#             entry point. Deliberately not described as "the newest 1.x" --
+#             that would go stale on the next maintenance release, and the point
+#             holds for any 1.x version regardless. 1.x receives security fixes
+#             only since v2.0.0 shipped.
+MCP_RUNNABLE = "2.1.1"
+MCP_BROKEN = "1.29.1"
 
 
 def _declared(name: str, requirements: list[str]) -> Requirement:
@@ -51,13 +56,13 @@ def _requirements_txt() -> list[str]:
         pytest.param(_requirements_txt, id="requirements.txt"),
     ],
 )
-def test_mcp_constraint_excludes_releases_without_fastmcp(source):
+def test_mcp_constraint_excludes_incompatible_majors(source):
     spec = _declared("mcp", source()).specifier
     assert spec.contains(
         MCP_RUNNABLE
     ), f"constraint rejects mcp {MCP_RUNNABLE}, which the server runs on"
     assert not spec.contains(MCP_BROKEN), (
-        f"constraint admits mcp {MCP_BROKEN}, which has no mcp.server.fastmcp; "
+        f"constraint admits mcp {MCP_BROKEN}, which has no mcp.server.mcpserver; "
         "a fresh install would resolve to a server that cannot start"
     )
 

@@ -193,7 +193,7 @@ def _resolve_tool(name):
 def _advertised_tool_names(mcp):
     """Tool names the server actually advertises, via the public async API.
 
-    FastMCP exposes list_tools() publicly; mcp._tool_manager is private and can
+    MCPServer exposes list_tools() publicly; mcp._tool_manager is private and can
     change under us on an upstream bump. Kept in one place either way.
     """
     import asyncio
