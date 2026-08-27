@@ -52,9 +52,7 @@ class TestLoginInteractive:
             )
             result = asyncio.run(auth.login_interactive(ctx))
         assert "Logged in" in result
-        mm.multi_factor_authenticate.assert_awaited_once_with(
-            "a@b.com", "pw", "123456"
-        )
+        mm.multi_factor_authenticate.assert_awaited_once_with("a@b.com", "pw", "123456")
         no_session_save.save_authenticated_session.assert_called_once_with(mm)
 
     def test_user_cancels_initial_form(self, no_session_save):
@@ -173,17 +171,32 @@ class TestDebugSessionLoading:
 
 
 class TestElicitNotSupported:
-    """Older MCP SDKs (<1.10) do not expose Context.elicit."""
+    """A Context without .elicit must produce a hint, not a crash.
+
+    Asserting on the declared floor rather than a hardcoded version string: the
+    tests previously pinned "1.10", which silently described an SDK the project
+    no longer supports once the floor moved. The number now comes from the
+    dependency constraint, so it cannot drift from what is actually required.
+    """
+
+    def _declared_mcp_floor(self):
+        import re
+        from pathlib import Path
+
+        text = (Path(__file__).resolve().parent.parent / "requirements.txt").read_text(
+            encoding="utf-8"
+        )
+        return re.search(r"mcp\[cli\]>=([0-9.]+)", text).group(1)
 
     def test_login_interactive_returns_upgrade_hint(self, no_session_save):
         ctx = SimpleNamespace()  # no elicit attribute
         result = asyncio.run(auth.login_interactive(ctx))
-        assert "1.10" in result
+        assert self._declared_mcp_floor() in result
         assert "login_setup.py" in result
         no_session_save.save_authenticated_session.assert_not_called()
 
     def test_login_with_token_returns_upgrade_hint(self, no_session_save):
         ctx = SimpleNamespace()
         result = asyncio.run(auth.login_with_token_interactive(ctx))
-        assert "1.10" in result
+        assert self._declared_mcp_floor() in result
         no_session_save.save_token.assert_not_called()

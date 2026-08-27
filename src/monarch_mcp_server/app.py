@@ -1,8 +1,8 @@
-"""FastMCP application instance and entry point."""
+"""MCPServer application instance and entry point."""
 
 import logging
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 # this to INFO/DEBUG temporarily if you need to trace GraphQL traffic.
 logging.getLogger("gql.transport.aiohttp").setLevel(logging.WARNING)
 
-# Initialize FastMCP server
-mcp = FastMCP("Monarch Money MCP Server")
+# Initialize the MCP server
+mcp = MCPServer("Monarch Money MCP Server")
 
 # Gate tool registration BEFORE the tools package is imported. Anything not
 # enabled in tools.toml is never registered, so it is not advertised to the model
