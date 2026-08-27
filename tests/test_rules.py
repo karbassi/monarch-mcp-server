@@ -315,8 +315,17 @@ class TestDeleteTransactionRule:
         assert "deleted" in data["message"].lower()
 
     @patch("monarch_mcp_server.tools.rules.get_monarch_client")
-    async def test_delete_rule_not_found(self, mock_get_client):
-        """Test deletion when rule doesn't exist."""
+    async def test_delete_rule_with_an_errors_payload_is_a_failure(
+        self, mock_get_client
+    ):
+        """An errors payload means failure -- whatever `deleted` says.
+
+        Renamed from test_delete_rule_not_found: a real missing rule does not
+        come back as a payload at all, it raises TransportQueryError ("Not
+        found"), which test_a_transport_error_is_still_reported covers. This
+        case is a well-formed response carrying errors, which is the only signal
+        in the payload that means anything.
+        """
         mock_client = AsyncMock()
         mock_client.gql_call.return_value = {
             "deleteTransactionRule": {
