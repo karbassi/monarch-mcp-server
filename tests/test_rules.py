@@ -1,9 +1,7 @@
 """Tests for transaction rules MCP tools."""
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, patch
 
 from monarch_mcp_server.tools.rules import (
     create_transaction_rule,
