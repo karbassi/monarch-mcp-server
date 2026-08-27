@@ -180,13 +180,23 @@ class TestElicitNotSupported:
     """
 
     def _declared_mcp_floor(self):
+        """The mcp floor from requirements.txt.
+
+        Fails with the file contents rather than an AttributeError on None if the
+        line format ever changes -- a test helper that dies opaquely is worse
+        than one that says what it could not find.
+        """
         import re
         from pathlib import Path
 
-        text = (Path(__file__).resolve().parent.parent / "requirements.txt").read_text(
-            encoding="utf-8"
+        requirements = Path(__file__).resolve().parent.parent / "requirements.txt"
+        text = requirements.read_text(encoding="utf-8")
+        match = re.search(r"^\s*mcp\[cli\]\s*>=\s*([0-9][0-9.]*)", text, re.MULTILINE)
+        assert match is not None, (
+            f"could not find an mcp[cli] floor in {requirements}; "
+            f"declared dependencies were:\n{text}"
         )
-        return re.search(r"mcp\[cli\]>=([0-9.]+)", text).group(1)
+        return match.group(1)
 
     def test_login_interactive_returns_upgrade_hint(self, no_session_save):
         ctx = SimpleNamespace()  # no elicit attribute
