@@ -1,8 +1,22 @@
 """MCPServer application instance and entry point."""
 
+import argparse
 import logging
+import os
+from typing import TYPE_CHECKING
 
-from mcp.server.mcpserver import MCPServer
+if TYPE_CHECKING:
+    from mcp.server.transport_security import TransportSecuritySettings
+    from starlette.applications import Starlette
+
+try:  # mcp >= 2.0 renamed FastMCP to MCPServer
+    from mcp.server.mcpserver import MCPServer
+except ImportError:  # mcp < 2.0
+    # mypy type-checks against the installed (2.x) mcp, where these 1.x names
+    # are absent; the fallback is only taken at runtime under mcp 1.x.
+    from mcp.server.fastmcp import (  # type: ignore[no-redef,attr-defined]
+        FastMCP as MCPServer,
+    )
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +38,12 @@ mcp = MCPServer("Monarch Money MCP Server")
 from monarch_mcp_server import tool_policy  # noqa: E402
 
 _withheld, _registered = tool_policy.enforce(mcp)
+
+# Must run before the tool modules are imported, since it works by wrapping
+# mcp.tool() and registration happens at import time.
+from monarch_mcp_server import read_only  # noqa: E402
+
+read_only.install(mcp)
 
 # Import tools package to trigger @mcp.tool() registration
 import monarch_mcp_server.tools  # noqa: E402, F401
@@ -82,12 +102,148 @@ def log_tool_policy() -> None:
 app = mcp
 
 
-def main() -> None:
+def _port(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("port must be an integer") from None
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
+
+
+def _env_list(name: str) -> list[str]:
+    return [
+        value.strip() for value in os.environ.get(name, "").split(",") if value.strip()
+    ]
+
+
+# Loopback names are always accepted for Host/Origin validation. Listening on all
+# interfaces must not disable that check; remote names are added explicitly.
+_LOCAL_ALLOWED_HOSTS = [
+    "localhost",
+    "localhost:*",
+    "127.0.0.1",
+    "127.0.0.1:*",
+    "[::1]",
+    "[::1]:*",
+]
+_LOCAL_ALLOWED_ORIGINS = [
+    "http://localhost",
+    "http://localhost:*",
+    "http://127.0.0.1",
+    "http://127.0.0.1:*",
+    "http://[::1]",
+    "http://[::1]:*",
+]
+
+
+def _transport_security(
+    allowed_hosts: list[str] | None = None,
+    allowed_origins: list[str] | None = None,
+) -> "TransportSecuritySettings":
+    """Host/Origin validation (DNS-rebinding protection) for the HTTP transport.
+
+    Loopback names are always allowed. ``allowed_hosts``/``allowed_origins`` add
+    remote names; when either is None it falls back to the matching
+    MONARCH_MCP_ALLOWED_* env var (comma-separated).
+
+    mcp 2.x takes this per call rather than through mutable server settings, so
+    both ``main`` and ``http_app`` build it here rather than assigning it once.
+    """
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    return TransportSecuritySettings(
+        allowed_hosts=[
+            *_LOCAL_ALLOWED_HOSTS,
+            *(
+                allowed_hosts
+                if allowed_hosts is not None
+                else _env_list("MONARCH_MCP_ALLOWED_HOSTS")
+            ),
+        ],
+        allowed_origins=[
+            *_LOCAL_ALLOWED_ORIGINS,
+            *(
+                allowed_origins
+                if allowed_origins is not None
+                else _env_list("MONARCH_MCP_ALLOWED_ORIGINS")
+            ),
+        ],
+    )
+
+
+def http_app(
+    host: str = "127.0.0.1",
+    allowed_hosts: list[str] | None = None,
+    allowed_origins: list[str] | None = None,
+) -> "Starlette":
+    """The streamable-HTTP ASGI app with Host/Origin validation applied."""
+    return mcp.streamable_http_app(
+        host=host,
+        transport_security=_transport_security(allowed_hosts, allowed_origins),
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
     """Main entry point for the server."""
-    logger.info("Starting Monarch Money MCP Server...")
+    parser = argparse.ArgumentParser(description="Monarch Money MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "streamable-http", "http"),
+        default=os.environ.get("MONARCH_MCP_TRANSPORT", "stdio"),
+        help="MCP transport (env: MONARCH_MCP_TRANSPORT; default: stdio)",
+    )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("MONARCH_MCP_HOST", "127.0.0.1"),
+        help="HTTP bind address (env: MONARCH_MCP_HOST; default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=_port,
+        default=os.environ.get("MONARCH_MCP_PORT", "8000"),
+        help="HTTP port (env: MONARCH_MCP_PORT; default: 8000)",
+    )
+    parser.add_argument(
+        "--allowed-host",
+        action="append",
+        default=None,
+        help="Additional HTTP Host value, e.g. mcp.example.com (repeatable; "
+        "env: MONARCH_MCP_ALLOWED_HOSTS, comma-separated)",
+    )
+    parser.add_argument(
+        "--allowed-origin",
+        action="append",
+        default=None,
+        help="Additional browser Origin, e.g. https://client.example.com (repeatable; "
+        "env: MONARCH_MCP_ALLOWED_ORIGINS, comma-separated)",
+    )
+    args = parser.parse_args(argv)
+    # argparse does not check choices for defaults supplied by the environment.
+    if args.transport not in ("stdio", "streamable-http", "http"):
+        parser.error("MONARCH_MCP_TRANSPORT must be stdio, streamable-http, or http")
+    if not args.host.strip():
+        parser.error("HTTP host must not be empty")
+
+    logger.info("Starting Monarch Money MCP Server (%s)...", args.transport)
     log_tool_policy()
     try:
-        mcp.run()
+        if args.transport == "stdio":
+            mcp.run()
+        else:
+            # mcp 2.x configures the HTTP transport per call rather than through
+            # mutable settings. Host/Origin validation is passed alongside the
+            # bind host and port, not assigned onto the server first.
+            mcp.run(
+                "streamable-http",
+                host=args.host,
+                port=args.port,
+                transport_security=_transport_security(
+                    allowed_hosts=args.allowed_host,
+                    allowed_origins=args.allowed_origin,
+                ),
+            )
     except Exception as e:
         logger.error(f"Failed to run server: {str(e)}")
         raise

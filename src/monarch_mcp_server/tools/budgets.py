@@ -332,13 +332,19 @@ async def set_budget_amount(
 
         result = await client.set_budget_amount(**params)
 
-        return json_success(
-            {
-                "success": True,
-                "message": f"Budget set to ${amount:.2f}"
-                + (" for all future months" if apply_to_future else ""),
-                "result": result,
-            }
-        )
+        # No literal "success": True here. The upstream mutation selects no
+        # errors field, so there is nothing to check and nothing that justifies
+        # asserting the write landed. Report what was requested and hand back
+        # the raw result rather than a claim the response cannot support.
+        return json_success({
+            "requested": {
+                "amount": amount,
+                "apply_to_future": apply_to_future,
+                "category_id": category_id,
+                "category_group_id": category_group_id,
+                "start_date": start_date,
+            },
+            "result": result,
+        })
     except Exception as e:
         return json_error("set_budget_amount", e)

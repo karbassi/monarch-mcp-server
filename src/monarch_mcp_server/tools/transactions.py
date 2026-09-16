@@ -16,6 +16,8 @@ from monarch_mcp_server.helpers import (
     format_exception,
     format_transaction,
     json_error,
+    json_rejected,
+    payload_errors,
     json_success,
     tool_response_envelope,
 )
@@ -663,6 +665,9 @@ async def create_transaction(
             transaction_data["update_balance"] = update_balance
 
         result = await client.create_transaction(**transaction_data)
+        errors = payload_errors(result, "createTransaction")
+        if errors:
+            return json_rejected("create_transaction", errors)
         return json_success(result)
     except Exception as e:
         return json_error("create_transaction", e)
@@ -739,6 +744,9 @@ async def update_transaction(
             update_data["notes"] = notes
 
         result = await client.update_transaction(**update_data)
+        errors = payload_errors(result, "updateTransaction")
+        if errors:
+            return json_rejected("update_transaction", errors)
         return json_success(result)
     except Exception as e:
         return json_error("update_transaction", e)
@@ -758,6 +766,9 @@ async def categorize_transaction(transaction_id: str, category_id: str) -> str:
         result = await client.update_transaction(
             transaction_id=transaction_id, category_id=category_id
         )
+        errors = payload_errors(result, "updateTransaction")
+        if errors:
+            return json_rejected("categorize_transaction", errors)
         return json_success(result)
     except Exception as e:
         return json_error("categorize_transaction", e)
@@ -795,6 +806,9 @@ async def update_transaction_notes(
             transaction_id=transaction_id,
             notes=formatted_notes,
         )
+        errors = payload_errors(result, "updateTransaction")
+        if errors:
+            return json_rejected("update_transaction_notes", errors)
         return json_success(result)
     except Exception as e:
         return json_error("update_transaction_notes", e)
@@ -823,6 +837,9 @@ async def mark_transaction_reviewed(transaction_id: str) -> str:
             transaction_id=transaction_id,
             reviewed=True,
         )
+        errors = payload_errors(result, "updateTransaction")
+        if errors:
+            return json_rejected("mark_transaction_reviewed", errors)
         return json_success(result)
     except Exception as e:
         return json_error("mark_transaction_reviewed", e)
@@ -872,14 +889,17 @@ async def bulk_categorize_transactions(
             "errors": [],
         }
 
-        async def _update_one(txn_id: str) -> None:
+        async def _update_one(txn_id: str) -> Any:
             update_params: Dict[str, Any] = {
                 "transaction_id": txn_id,
                 "category_id": category_id,
             }
             if mark_reviewed:
                 update_params["needs_review"] = False
-            await client.update_transaction(**update_params)
+            # Returned, not discarded: Monarch refuses a write by putting
+            # errors in the payload of an HTTP 200, so the absence of an
+            # exception says nothing about whether anything was written.
+            return await client.update_transaction(**update_params)
 
         # Use asyncio.gather for concurrent updates
         tasks = [_update_one(txn_id) for txn_id in transaction_ids]
@@ -891,11 +911,20 @@ async def bulk_categorize_transactions(
                 results["errors"].append(
                     {
                         "transaction_id": txn_id,
-                        "error": str(outcome),
+                        "error": format_exception(outcome),
                     }
                 )
-            else:
-                results["successful"] += 1
+                continue
+
+            errors = payload_errors(outcome, "updateTransaction")
+            if errors:
+                results["failed"] += 1
+                results["errors"].append(
+                    {"transaction_id": txn_id, "error": errors}
+                )
+                continue
+
+            results["successful"] += 1
 
         return json_success(results)
     except Exception as e:
@@ -917,6 +946,9 @@ async def delete_transaction(transaction_id: str) -> str:
     """
     try:
         client = await get_monarch_client()
+        # Upstream delete_transaction returns a bool, not a GraphQL payload, so
+        # there is no errors object to inspect. It raises on failure, which the
+        # except below turns into an error result.
         result = await client.delete_transaction(transaction_id=transaction_id)
         return json_success(result)
     except Exception as e:
@@ -1000,6 +1032,7 @@ async def get_transactions_needing_review(
     uncategorized_only: bool = False,
     without_notes_only: bool = False,
     limit: int = 100,
+    offset: int = 0,
     account_id: Optional[str] = None,
 ) -> str:
     """
@@ -1007,21 +1040,37 @@ async def get_transactions_needing_review(
 
     This is the primary tool for finding transactions to categorize and review.
 
+    The review filter is applied by Monarch, not locally, so the count
+    reflects the whole account rather than one arbitrary page. The response
+    is an envelope carrying count, total_count and truncated, so a partial
+    page is visible rather than looking like the complete answer.
+
     Args:
-        needs_review: Filter for transactions flagged as needing review (default: True)
+        needs_review: True for transactions flagged as needing review
+            (default), False for transactions already reviewed.
         days: Only include transactions from the last N days (e.g., 7 for last week)
         uncategorized_only: Only include transactions without a category assigned
         without_notes_only: Only include transactions without notes/memos
         limit: Maximum number of transactions to return (default: 100)
+        offset: Number of transactions to skip, for paging the queue
         account_id: Filter by specific account ID
 
     Returns:
-        List of transactions matching the criteria with full details.
+        An envelope with the matching transactions under "data".
     """
     try:
         client = await get_monarch_client()
 
-        filters: Dict[str, Any] = {"limit": limit}
+        filters: Dict[str, Any] = {"limit": limit, "offset": offset}
+
+        # Sent upstream rather than applied to an already fetched page. The
+        # previous local filter meant the tool asked for an arbitrary page of
+        # *all* transactions and reported however many of those happened to
+        # need review, with no way to tell that the page had been truncated
+        # and no offset to page past it. It also treated needs_review=False as
+        # "no filter" rather than as its inverse, so passing False returned
+        # every transaction on the page, including ones needing review.
+        filters["needs_review"] = needs_review
 
         if days:
             end = datetime.now().strftime("%Y-%m-%d")
@@ -1036,12 +1085,12 @@ async def get_transactions_needing_review(
             filters["has_notes"] = False
 
         transactions_data = await client.get_transactions(**filters)
+        all_transactions = transactions_data.get("allTransactions") or {}
+        results = all_transactions.get("results") or []
+        total_count = all_transactions.get("totalCount")
 
         transaction_list = []
-        for txn in transactions_data.get("allTransactions", {}).get("results", []):
-            if needs_review and not txn.get("needsReview", False):
-                continue
-
+        for txn in results:
             if uncategorized_only:
                 category = txn.get("category")
                 if category and category.get("id"):
@@ -1049,7 +1098,38 @@ async def get_transactions_needing_review(
 
             transaction_list.append(format_transaction(txn))
 
-        return json_success(transaction_list)
+        args: Dict[str, Any] = {
+            "needs_review": needs_review,
+            "days": days,
+            "uncategorized_only": uncategorized_only,
+            "without_notes_only": without_notes_only,
+            "limit": limit,
+            "offset": offset,
+            "account_id": account_id,
+        }
+        # uncategorized_only is still applied locally, so it can shrink the
+        # page below the limit. Reporting the server side total alongside it
+        # would imply this page is complete, which it is not.
+        server_total = None if uncategorized_only else total_count
+        # Truncation must be judged on the page Monarch returned, not on what
+        # survived the local filter. Otherwise a page of 100 trimmed to 3 rows
+        # against a server total of 900 reports truncated=False, asserting
+        # completeness on 3 of 900.
+        raw_page_filled = isinstance(limit, int) and len(results) >= limit
+        envelope = tool_response_envelope(
+            "get_transactions_needing_review",
+            args,
+            transaction_list,
+            total_count=server_total,
+            search_info=(
+                {"local_filter": "uncategorized_only"}
+                if uncategorized_only
+                else None
+            ),
+        )
+        if raw_page_filled:
+            envelope["truncated"] = True
+        return json_success(envelope)
     except Exception as e:
         return json_error("get_transactions_needing_review", e)
 

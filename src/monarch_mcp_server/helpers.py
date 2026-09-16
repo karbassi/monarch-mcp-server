@@ -102,6 +102,60 @@ def format_transaction(txn: Dict[str, Any], extended: bool = False) -> Dict[str,
     return info
 
 
+def payload_errors(
+    result: Any, *payload_keys: str
+) -> Optional[Dict[str, Any]]:
+    """Return a GraphQL payload's ``errors`` object, or None if the write took.
+
+    ``gql_call`` raises on transport errors and on top level GraphQL errors,
+    but Monarch rejects a mutation by returning ``errors`` *inside* an HTTP 200
+    body. Treating "no exception" as success therefore reports refused writes
+    as completed ones, which is worse than an outright failure: the caller
+    marks the work done and moves on.
+
+    Pass the payload keys to look under, e.g. ``"updateTransaction"``. With no
+    keys, every top level payload in the response is checked.
+
+    Monarch sometimes rejects with an all null error object, which is truthy
+    but carries no information, so that is normalised to a readable message.
+    """
+    if not isinstance(result, dict):
+        return None
+
+    candidates = (
+        [result.get(key) for key in payload_keys]
+        if payload_keys
+        else list(result.values())
+    )
+
+    for payload in candidates:
+        if not isinstance(payload, dict):
+            continue
+        errors = payload.get("errors")
+        if not errors:
+            continue
+        if isinstance(errors, dict):
+            meaningful = {
+                k: v
+                for k, v in errors.items()
+                if k != "__typename" and v is not None
+            }
+            return meaningful or {"message": "Monarch rejected the request"}
+        return {"message": "Monarch rejected the request", "errors": errors}
+
+    return None
+
+
+def json_rejected(tool_name: str, errors: Dict[str, Any]) -> str:
+    """Serialize a payload level rejection as an explicit failure."""
+    logger.warning(f"{tool_name} was rejected by Monarch: {errors}")
+    return json.dumps(
+        {"success": False, "tool": tool_name, "errors": errors},
+        indent=2,
+        default=str,
+    )
+
+
 def json_success(data: Any) -> str:
     """Serialize *data* to a JSON string for tool responses."""
     return json.dumps(data, indent=2, default=str)

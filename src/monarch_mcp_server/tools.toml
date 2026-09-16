@@ -28,6 +28,7 @@ get_account_holdings = true
 get_account_balance_history = true
 get_institutions = true
 get_recent_account_balances = true
+get_account_sync_health = true
 
 # Net worth, cashflow, summaries
 get_net_worth = true
@@ -50,6 +51,14 @@ get_merchant = true
 
 # Credit
 get_credit_history = true
+get_debt_paydown = true
+
+# Goals
+get_goals = true
+get_goal_contributions = true
+
+# Identity
+monarch_whoami = true
 
 # Rules
 get_transaction_rules = true
@@ -98,9 +107,17 @@ review_recurring_stream = false
 create_transaction_rule = false
 update_transaction_rule = false
 delete_transaction_rule = false
+reorder_transaction_rule = false
 
 # Budgets
 set_budget_amount = false
+
+# Goals
+update_savings_goal = false
+set_goal_contribution = false
+
+# Accounts — edit name, balance, type, visibility
+update_account = false
 
 # Account history
 upload_account_balance_history = false

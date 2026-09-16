@@ -85,6 +85,7 @@ READ_TOOLS = frozenset(
         "get_account_balance_history",
         "get_institutions",
         "get_recent_account_balances",
+        "get_account_sync_health",
         # net worth / cashflow / summaries
         "get_net_worth",
         "get_net_worth_by_account_type",
@@ -102,6 +103,12 @@ READ_TOOLS = frozenset(
         "get_merchant",
         # credit
         "get_credit_history",
+        "get_debt_paydown",
+        # goals
+        "get_goals",
+        "get_goal_contributions",
+        # identity
+        "monarch_whoami",
         # rules
         "get_transaction_rules",
         # tags
@@ -144,9 +151,14 @@ WRITE_TOOLS = frozenset(
         "create_transaction_rule",
         "update_transaction_rule",
         "delete_transaction_rule",
+        "reorder_transaction_rule",
         # budgets
         "set_budget_amount",
+        # goals
+        "update_savings_goal",
+        "set_goal_contribution",
         # accounts
+        "update_account",
         "upload_account_balance_history",
         # No Monarch-side data change, but reaches out to the user's institutions
         # and can trip rate limits or an MFA prompt.

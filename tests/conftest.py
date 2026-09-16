@@ -105,6 +105,44 @@ _DUPLICATES_RESPONSE = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def isolate_credential_storage(monkeypatch, tmp_path):
+    """Keep the whole suite away from real credential storage.
+
+    Two things went wrong without this. Tests that exercise session loading
+    read whatever the developer actually had stored, so a test asserting "no
+    session returns None" failed on any authenticated machine and passed
+    everywhere else. And constructing a SecureMonarchSession runs the keyring
+    probe, which writes to the real login keychain on macOS and can raise an
+    OS credential prompt during an ordinary test run.
+
+    Both the file fallback and the keyring backend are redirected here. Tests
+    that install their own keyring fake still win, because their monkeypatch
+    runs after this one.
+    """
+    import types
+
+    from monarch_mcp_server import secure_session as ss_module
+
+    monkeypatch.setattr(ss_module, "_TOKEN_DIR", tmp_path / "credential-store")
+    monkeypatch.setattr(
+        ss_module, "_TOKEN_FILE", tmp_path / "credential-store" / "token"
+    )
+
+    store: dict = {}
+    fake = types.ModuleType("keyring")
+    fake.set_password = lambda service, username, value: store.__setitem__(
+        (service, username), value
+    )
+    fake.get_password = lambda service, username: store.get((service, username))
+    fake.delete_password = lambda service, username: store.pop(
+        (service, username), None
+    )
+    monkeypatch.setitem(sys.modules, "keyring", fake)
+
+    yield
+
+
 @pytest.fixture
 def mock_monarch_client():
     """Create a mock MonarchMoney client with default responses."""

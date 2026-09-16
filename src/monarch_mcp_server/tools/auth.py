@@ -2,8 +2,13 @@
 
 import logging
 import os
+from typing import Any
 
-from mcp.server.mcpserver import Context
+try:  # mcp >= 2.0
+    from mcp.server.mcpserver import Context
+except ImportError:  # mcp < 2.0
+    # mypy checks against the installed 2.x mcp, where this 1.x name is absent.
+    from mcp.server.fastmcp import Context  # type: ignore[no-redef,attr-defined]
 
 from monarch_mcp_server import auth
 from monarch_mcp_server.app import mcp
@@ -51,7 +56,7 @@ async def monarch_login_with_token(ctx: Context) -> str:
     """Sign in to Monarch Money using a browser-copied session token.
 
     Useful for SSO users who can't use password login. Grab the token from
-    browser DevTools → Application → Local Storage → app.monarchmoney.com.
+    browser DevTools → Application → Local Storage → app.monarch.com.
     """
     return await auth.login_with_token_interactive(ctx)
 
@@ -62,21 +67,33 @@ async def monarch_logout() -> str:
     return await auth.logout()
 
 
+def _describe_session(session: dict[str, Any] | None) -> str:
+    """Summarize a stored session without leaking credential values.
+
+    A cookie-mode session carries no token, so probing for a token alone
+    reports a false negative on sessions that authenticate fine.
+    """
+    if not session:
+        return "❌ No Monarch session found in secure storage"
+
+    auth_mode = session.get("auth_mode", "token")
+    credentials = []
+    if session.get("cookies"):
+        credentials.append("cookies")
+    if session.get("token"):
+        credentials.append("token")
+
+    return (
+        f"✅ Session found in secure storage (auth_mode={auth_mode}, "
+        f"credentials: {', '.join(credentials)})"
+    )
+
+
 @mcp.tool()
 async def check_auth_status() -> str:
     """Check if already authenticated with Monarch Money."""
     try:
-        # Ask for the whole session, not just the token: a cookie-mode session
-        # is stored without a `token` key, so load_token() returns None for a
-        # login that works perfectly well.
-        session = secure_session.load_session()
-        if session:
-            mode = session.get("auth_mode") or (
-                "cookie" if session.get("cookies") else "token"
-            )
-            status = f"✅ Authenticated session found (auth_mode={mode})\n"
-        else:
-            status = "❌ No stored session found\n"
+        status = _describe_session(secure_session.load_session()) + "\n"
 
         email = os.getenv("MONARCH_EMAIL")
         if email:
@@ -93,16 +110,15 @@ async def check_auth_status() -> str:
 
 @mcp.tool()
 async def debug_session_loading() -> str:
-    """Debug keyring session loading issues."""
+    """Debug session loading issues."""
     try:
         session = secure_session.load_session()
         if session:
-            mode = session.get("auth_mode") or (
-                "cookie" if session.get("cookies") else "token"
-            )
-            fields = sorted(k for k in session if k != "auth_mode")
-            return f"✅ Session found (auth_mode={mode}, fields={fields})."
-        return "❌ No session found. Run login_setup.py to authenticate."
+            return _describe_session(session) + "."
+        return (
+            "❌ No Monarch session found in secure storage. "
+            "Run login_setup.py to authenticate."
+        )
     except Exception as e:
         logger.exception("Keyring access failed")
         return f"❌ Keyring access failed: {type(e).__name__}: {e}"

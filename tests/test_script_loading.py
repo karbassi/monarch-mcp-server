@@ -41,7 +41,8 @@ def test_load_script_executes_login_setup():
     says nothing about whether it touches sys.path -- if it is refactored to
     stop doing that, this should keep passing."""
     with load_script(LOGIN_SETUP) as module:
-        assert module._CANONICAL_LIMIT > 0
+        assert callable(module._read_cookie_string)
+        assert module.COOKIE_FILE is not None
 
 
 def test_repeated_loads_do_not_accumulate(path_mutating_script):
