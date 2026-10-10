@@ -31,19 +31,26 @@ logging.getLogger("gql.transport.aiohttp").setLevel(logging.WARNING)
 # Initialize the MCP server
 mcp = MCPServer("Monarch Money MCP Server")
 
-# Gate tool registration BEFORE the tools package is imported. Anything not
-# enabled in tools.toml is never registered, so it is not advertised to the model
-# and cannot be invoked even by name. See tool_policy for why this is an
-# allowlist.
-from monarch_mcp_server import tool_policy  # noqa: E402
-
-_withheld, _registered = tool_policy.enforce(mcp)
-
-# Must run before the tool modules are imported, since it works by wrapping
-# mcp.tool() and registration happens at import time.
+# Both gates must run before the tool modules are imported, since they work by
+# wrapping mcp.tool() and registration happens at import time.
+#
+# read_only is installed first so that it is the INNER wrapper and tool_policy
+# the outer one. The outer wrapper sees every registration attempt, which is
+# what keeps tool_inventory() complete; installed the other way round,
+# read_only short-circuited the write tools before tool_policy could record
+# them, so under MONARCH_MCP_READ_ONLY the inventory silently lost all of them.
+# tool_policy also folds the read-only flag into its own decision, so the
+# withheld/registered split it reports is the real one.
 from monarch_mcp_server import read_only  # noqa: E402
 
 read_only.install(mcp)
+
+# Anything not enabled in tools.toml is never registered, so it is not
+# advertised to the model and cannot be invoked even by name. See tool_policy
+# for why this is an allowlist.
+from monarch_mcp_server import tool_policy  # noqa: E402
+
+_withheld, _registered = tool_policy.enforce(mcp)
 
 # Import tools package to trigger @mcp.tool() registration
 import monarch_mcp_server.tools  # noqa: E402, F401
@@ -79,10 +86,11 @@ def log_tool_policy() -> None:
     """
     withheld, registered = withheld_tools(), registered_tools()
     logger.info(
-        "Tool policy: %d exposed, %d withheld (config: %s)",
+        "Tool policy: %d exposed, %d withheld (config: %s%s)",
         len(registered),
         len(withheld),
         tool_policy.config_path(),
+        f", {read_only.ENV_VAR} on" if read_only.is_read_only() else "",
     )
     if withheld:
         logger.info("Withheld (enable in tools.toml): %s", ", ".join(withheld))

@@ -275,6 +275,14 @@ def enforce(mcp: Any) -> tuple[list[str], list[str]]:
     registers usually means upstream renamed it.
     """
     enabled = load_enabled()
+    # MONARCH_MCP_READ_ONLY is a second, independent switch. Fold it in here so
+    # the withheld/registered split this returns reflects what is actually
+    # exposed, rather than counting a write as registered that read_only then
+    # drops.
+    from monarch_mcp_server import read_only
+
+    if read_only.is_read_only():
+        enabled -= read_only.MUTATING_TOOLS
     original = mcp.tool
     withheld: list[str] = []
     registered: list[str] = []

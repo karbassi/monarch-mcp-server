@@ -413,3 +413,37 @@ def test_both_write_gates_name_the_same_tools():
     from monarch_mcp_server import read_only
 
     assert tool_policy.WRITE_TOOLS == read_only.MUTATING_TOOLS
+
+
+def test_read_only_flag_keeps_the_inventory_complete(tmp_path):
+    """With every tool enabled in tools.toml and MONARCH_MCP_READ_ONLY on, the
+    writes must show up as withheld, not vanish from the inventory."""
+    import json
+    import os
+    import subprocess
+    import sys
+
+    config = tmp_path / "tools.toml"
+    shipped = (tool_policy._CANDIDATES[1]).read_text()
+    config.write_text(shipped.replace("= false", "= true"))
+    env = {
+        **os.environ,
+        "MONARCH_TOOLS_CONFIG": str(config),
+        "MONARCH_MCP_READ_ONLY": "1",
+        "HOME": str(tmp_path),
+        "PYTHON_KEYRING_BACKEND": "keyring.backends.null.Keyring",
+    }
+    script = (
+        "import asyncio, json\n"
+        "from monarch_mcp_server import app\n"
+        "print(json.dumps({'inventory': app.tool_inventory(),"
+        " 'withheld': app.withheld_tools(), 'registered': app.registered_tools(),"
+        " 'advertised': sorted(t.name for t in asyncio.run(app.mcp.list_tools()))}))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, check=True
+    )
+    data = json.loads(result.stdout.strip().splitlines()[-1])
+    assert set(data["inventory"]) == tool_policy.READ_TOOLS | tool_policy.WRITE_TOOLS
+    assert set(data["withheld"]) == tool_policy.WRITE_TOOLS
+    assert set(data["registered"]) == set(data["advertised"]) == tool_policy.READ_TOOLS
