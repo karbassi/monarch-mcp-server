@@ -1218,7 +1218,9 @@ async def get_recurring_transactions(
         IDs, and stream.credit_report_liability_account containing liability
         identity and last_statement (id, due_date, bill_amount,
         minimum_payment_amount, payment_status, remaining_balance).
-        With limit omitted the result is the complete range. To page manually,
+        With limit omitted the result is the complete range; in the rare case
+        the internal page cap is hit, the envelope is returned with
+        truncated=true even when include_metadata is False. To page manually,
         pass limit with fixed dates and include_metadata=True, and advance
         offset by count until truncated is false.
     """
@@ -1355,7 +1357,11 @@ async def get_recurring_transactions(
                 )
             recurring_list.append(recurring_info)
 
-        if include_metadata:
+        # The legacy list has nowhere to put a truncation flag, and with limit
+        # omitted it promises the complete range. Hitting the page cap breaks
+        # that promise, so return the envelope even without include_metadata
+        # rather than a capped list that reads as complete.
+        if include_metadata or hit_page_cap:
             envelope = tool_response_envelope(
                 "get_recurring_transactions",
                 {

@@ -283,3 +283,15 @@ async def test_page_cap_is_reported_not_hidden(client, items):
         )
     assert client.gql_call.call_count == 3
     assert result["truncated"] is True
+
+
+async def test_page_cap_is_reported_even_for_the_default_list(client, items):
+    """The legacy list promises the complete range, so a capped read must not
+    come back as a bare list that looks complete."""
+    client.gql_call.return_value = _page_of(items[0], transactions.RECURRING_PAGE_SIZE)
+    with patch.object(transactions, "RECURRING_MAX_PAGES", 3):
+        result = json.loads(
+            await transactions.get_recurring_transactions("2026-02-01", "2026-02-28")
+        )
+    assert isinstance(result, dict)
+    assert result["truncated"] is True
