@@ -304,9 +304,7 @@ reach the port would otherwise be able to call `monarch_logout`, or
 account. Login happens in the separate `login_setup.py` container above, so the
 running server never needs those tools.
 
-To allow writes, add `-e MONARCH_MCP_READ_ONLY=0`. That registers every
-mutating tool, including the login and logout tools, on the listening socket,
-so only do it where every client that can reach the port is trusted.
+To allow writes, both gates have to open: add `-e MONARCH_MCP_READ_ONLY=0`, and mount a copy of `tools.toml` with the writes you want set to `true`, pointing `MONARCH_TOOLS_CONFIG` at it (see [Tool allowlist](#tool-allowlist-toolstoml)). `MONARCH_MCP_READ_ONLY=0` alone changes nothing, because the shipped `tools.toml` withholds every write. Enabled writes, including the login and logout tools if you turn them on, are reachable by anything that can reach the listening socket, so only do it where every client that can reach the port is trusted.
 
 ### Connect from another machine
 
@@ -513,9 +511,7 @@ tool does not enable it or refresh institutions.
 
 ## 🛠️ Available Tools
 
-All 60 registered tools. Required parameters are listed first, optional ones
-are marked with a trailing question mark. This table is generated from the
-live tool registry and the functions' signatures, so it does not drift.
+The full inventory of 65 tools. With the shipped `tools.toml`, the 35 read tools are registered and the 30 write tools are withheld until enabled (see [Tool allowlist](#tool-allowlist-toolstoml)). Required parameters are listed first, optional ones are marked with a trailing question mark. This table is checked against the tool inventory and the functions' signatures, so it does not drift.
 
 | Tool                              | Description                                                                   | Parameters                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | --------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -767,6 +763,12 @@ monarch-mcp-server/
 - Session tokens are stored in the system keyring
 - Authentication handled in secure terminal environment
 
+### Tool allowlist (`tools.toml`)
+
+Which tools register is decided by an allowlist, `src/monarch_mcp_server/tools.toml`. Every read tool ships as `true` and every write as `false`, so out of the box the server is read only even without `MONARCH_MCP_READ_ONLY`. A tool missing from the file is not registered, so a tool added upstream stays hidden until it is classified.
+
+To enable a write, copy the file somewhere outside the checkout, flip that tool to `true`, set `MONARCH_TOOLS_CONFIG` to the copy's path, and restart. A `tools.toml` at the repo root also overrides the shipped copy. An unreadable or missing config falls back to the read tools only. `MONARCH_MCP_READ_ONLY=1` is a second, independent gate: when set, it withholds every write regardless of `tools.toml`.
+
 ### Strongest option: read only mode
 
 Set `MONARCH_MCP_READ_ONLY=1` in the server's environment and the mutating
@@ -787,8 +789,8 @@ tool that is not there.
 }
 ```
 
-This leaves 30 of the 58 tools available, covering everything that reads.
-Read only is off by default outside Docker, so existing setups are unaffected;
+This leaves the 35 read tools of the 65 available, whatever `tools.toml` enables.
+`MONARCH_MCP_READ_ONLY` is off by default outside Docker (the shipped `tools.toml` already withholds writes);
 the Docker image turns it on (see [Start the HTTP server](#start-the-http-server)). Note that it
 also removes the login and logout tools, since those change durable state, so
 authenticate with `login_setup.py` before enabling it.
