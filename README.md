@@ -297,6 +297,17 @@ $ docker run -d --name monarch-mcp --restart unless-stopped \
 Connect your MCP client to `http://127.0.0.1:8000/mcp` using Streamable HTTP.
 See [HTTP transport configuration](#http-transport-configuration) for all settings.
 
+The image runs in [read only mode](#strongest-option-read-only-mode) by default,
+because the HTTP transport does not authenticate callers. Anything that can
+reach the port would otherwise be able to call `monarch_logout`, or
+`monarch_login_with_token` to swap your saved session for another Monarch
+account. Login happens in the separate `login_setup.py` container above, so the
+running server never needs those tools.
+
+To allow writes, add `-e MONARCH_MCP_READ_ONLY=0`. That registers every
+mutating tool, including the login and logout tools, on the listening socket,
+so only do it where every client that can reach the port is trusted.
+
 ### Connect from another machine
 
 > [!WARNING]
@@ -358,6 +369,26 @@ Origin entries include the scheme, for example `https://client.example.com`.
 Clients without an Origin header are supported.
 Browser clients may additionally require CORS handling at the reverse proxy.
 
+## Meta Muse
+
+Works great with Meta Muse, Meta's AI assistant, alongside Claude Desktop and
+Claude Code. Muse speaks MCP, so it connects the same way as any other client:
+give it the stdio launch command from the installation section, or point it at
+the Streamable HTTP endpoint if you are running the container.
+
+Using Muse? Ask it to install this server from this repo. Muse can handle the
+install and register the server with itself, but authentication is a step only
+you can do: run login_setup.py once and paste a browser cookie, or enter your
+password and MFA. After that, ask Muse to list your Monarch accounts to confirm
+it is working.
+
+Check out Muse, your personal AI agent. Redeem my code in Settings within 48
+hours of joining and we'll both get 1 billion Muse tokens.
+
+Code: O63W0U
+
+https://muse.ai/join
+
 ## ✨ Features
 
 ### 📊 Account Management
@@ -400,6 +431,53 @@ Browser clients may additionally require CORS handling at the reverse proxy.
 - **Update Transaction Rule**: Modify existing rules
 - **Delete Transaction Rule**: Remove a rule
 
+### Recurring forecasts and synced bills
+
+`get_recurring_transactions()` includes merchant forecasts **and synced liability
+bills** (such as credit cards and loans). Set `include_liabilities=False` to
+request only merchant recurring items. Omit both dates for the current calendar
+month, or provide both `start_date` and `end_date` in `YYYY-MM-DD` format.
+
+The default response remains a JSON list with the existing merchant fields.
+Each item also exposes `account_id`, `category_id`, `amount_diff`, and the stream's
+`name` and `merchant_id`. A liability item can have a null merchant. Its
+`stream.credit_report_liability_account` contains the liability `id`, linked
+`account_id`/`account` name, and `last_statement` with `id`, `due_date`,
+`bill_amount`, `minimum_payment_amount`, `payment_status`, and `remaining_balance`.
+Missing statements and unknown balances stay null; paid balances stay zero.
+
+**These are not interchangeable amounts.** The item's `amount` and stream's
+`amount` are recurring forecasts. `last_statement.bill_amount` is the original
+synced statement amount; `remaining_balance` is the remaining synced statement
+balance. The latest statement's due date can differ from the forecast item's
+`date`. Payment status is returned as supplied by Monarch, not inferred. These
+values reflect the latest sync, not a guaranteed real-time amount owed.
+
+Merchant forecasts and liability bills can describe the same payment. The tool
+preserves both with their identities: it does not sum, deduplicate, or substitute
+forecast amounts for unknown statement balances.
+
+With `limit` omitted, the tool reads every page itself and returns the complete
+range, so the default list is the whole month. Pass `limit` to read a single page
+instead, and use `include_metadata=True` to opt into the standard envelope
+(`data`, `args`, `count`, `total_count`, `truncated`, `tool`, `search`):
+
+```python
+get_recurring_transactions(
+    start_date="2026-02-01", end_date="2026-02-28",
+    include_liabilities=True, limit=100, offset=0, include_metadata=True,
+)
+```
+
+The API supplies no total, so `total_count` is null. With an explicit `limit`, a
+full page is conservatively marked `truncated=True` (more rows may exist). Keep
+the dates and filters fixed, advance `offset` by `count`, and continue until
+`truncated=False`. An exactly full final page requires one more request, which
+may return an empty page.
+
+Synced bills require bill sync to be available and configured in Monarch; the
+tool does not enable it or refresh institutions.
+
 ### 🔄 Merchant & Recurring Stream Management
 - **Get Merchant**: View a merchant's details including recurring transaction stream configuration
 - **Update Merchant**: Modify a merchant's name and/or recurring stream settings (frequency, amount, base date)
@@ -433,7 +511,7 @@ Browser clients may additionally require CORS handling at the reverse proxy.
 
 ## 🛠️ Available Tools
 
-All 58 registered tools. Required parameters are listed first, optional ones
+All 60 registered tools. Required parameters are listed first, optional ones
 are marked with a trailing question mark. This table is generated from the
 live tool registry and the functions' signatures, so it does not drift.
 
@@ -441,6 +519,7 @@ live tool registry and the functions' signatures, so it does not drift.
 | --------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `add_transaction_tag`             | Add a tag to a transaction, preserving any tags already on it                 | `transaction_id`, `tag_id`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `bulk_categorize_transactions`    | Apply the same category to multiple transactions at once                      | `transaction_ids`, `category_id`, `mark_reviewed`?, `dry_run`?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `bulk_update_transactions`        | Apply the same edit to many transactions in one request                       | `transaction_ids`, `category_id`?, `merchant_name`?, `notes`?, `goal_id`?, `needs_review`?, `business_entity_id`?, `dry_run`?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `categorize_transaction`          | Assign a category to a transaction                                            | `transaction_id`, `category_id`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `check_auth_status`               | Report the stored session and its auth mode                                   | None                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `create_transaction`              | Create a new transaction in Monarch Money                                     | `date`, `account_id`, `amount`, `merchant_name`, `category_id`, `notes`?, `update_balance`?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -456,6 +535,7 @@ live tool registry and the functions' signatures, so it does not drift.
 | `get_account_sync_health`         | Report the health of each linked institution connection                       | `stale_after_days`?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `get_accounts`                    | Get all financial accounts from Monarch Money                                 | None                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `get_budgets`                     | Get budget information from Monarch Money                                     | `start_date`?, `end_date`?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `get_business_entities` | List the business entities on the Monarch account (id and name) | None |
 | `get_cashflow`                    | Get cashflow analysis from Monarch Money                                      | `start_date`?, `end_date`?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `get_cashflow_by_month`           | Get spending trends over time, broken down by category and month              | `start_date`, `end_date`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `get_category_details`            | Get a single category's details including budget amounts for a month          | `category_id`, `month`?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -468,7 +548,7 @@ live tool registry and the functions' signatures, so it does not drift.
 | `get_net_worth`                   | Get net worth history over time                                               | `start_date`?, `end_date`?, `account_type`?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `get_net_worth_by_account_type`   | Get net worth breakdown by account type over time                             | `start_date`, `timeframe`?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `get_recent_account_balances`     | Get recent daily balances for every account                                   | `start_date`?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `get_recurring_transactions`      | Get upcoming recurring transactions                                           | `start_date`?, `end_date`?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `get_recurring_transactions`      | Get upcoming recurring transactions                                           | `start_date`?, `end_date`?, `include_liabilities`?, `limit`?, `offset`?, `include_metadata`?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `get_spending_summary`            | Get a spending summary broken down by category, category group, and merchant  | `start_date`?, `end_date`?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `get_transaction_categories`      | Get all available transaction categories from Monarch Money                   | None                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `get_transaction_category_groups` | Get all transaction category groups (parent groupings for categories)         | None                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -489,6 +569,7 @@ live tool registry and the functions' signatures, so it does not drift.
 | `review_recurring_stream`         | Set the review status of a recurring transaction stream                       | `stream_id`, `review_status`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `search_transactions`             | Search and filter transactions with comprehensive filtering options           | `search`?, `limit`?, `offset`?, `start_date`?, `end_date`?, `category_ids`?, `account_ids`?, `tag_ids`?, `has_attachments`?, `has_notes`?, `hidden_from_reports`?, `is_split`?, `is_recurring`?                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `set_budget_amount`               | Set or update a budget amount for a category or category group                | `amount`, `category_id`?, `category_group_id`?, `start_date`?, `apply_to_future`?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `set_business_entity` | Set (or clear) the business entity on one transaction | `transaction_id`, `business_entity_id` |
 | `set_goal_contribution`           | Set the budgeted monthly contribution to a goal from one funding account      | `goal_id`, `account_id`, `amount`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `set_transaction_tags`            | Set tags on a transaction                                                     | `transaction_id`, `tag_ids`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `setup_authentication`            | Get setup instructions                                                        | None                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -705,7 +786,8 @@ tool that is not there.
 ```
 
 This leaves 30 of the 58 tools available, covering everything that reads.
-Read only is off by default, so existing setups are unaffected. Note that it
+Read only is off by default outside Docker, so existing setups are unaffected;
+the Docker image turns it on (see [Start the HTTP server](#start-the-http-server)). Note that it
 also removes the login and logout tools, since those change durable state, so
 authenticate with `login_setup.py` before enabling it.
 
@@ -715,7 +797,7 @@ These tools mutate your Monarch data. The list is every registered tool that wri
 
 **Accounts**: `update_account`
 
-**Transactions**: `create_transaction`, `update_transaction`, `delete_transaction`, `categorize_transaction`, `update_transaction_notes`, `mark_transaction_reviewed`, `bulk_categorize_transactions`, `split_transaction`, `upload_account_balance_history`
+**Transactions**: `create_transaction`, `update_transaction`, `delete_transaction`, `categorize_transaction`, `update_transaction_notes`, `mark_transaction_reviewed`, `bulk_categorize_transactions`, `bulk_update_transactions`, `split_transaction`, `set_business_entity`, `upload_account_balance_history`
 
 **Tags**: `set_transaction_tags`, `add_transaction_tag`, `create_transaction_tag`
 
@@ -733,7 +815,7 @@ These tools mutate your Monarch data. The list is every registered tool that wri
 
 Because the LLM can be influenced by data it reads back (a malicious-looking memo or merchant name in a transaction), the safest setup is to configure your MCP client to require manual approval before any mutating tool runs. In Claude Desktop and Claude Code this is the default behavior for unknown tools; keep it that way for the tools listed above rather than allow-listing them.
 
-`bulk_categorize_transactions`, `upload_account_balance_history`, `update_account` and `update_category` accept a `dry_run=True` argument that returns the planned changes without executing them, useful for previewing before approving.
+`bulk_categorize_transactions`, `bulk_update_transactions`, `upload_account_balance_history`, `update_account` and `update_category` accept a `dry_run=True` argument that returns the planned changes without executing them, useful for previewing before approving.
 
 `update_category` additionally requires `confirm_rollover_reset=True` before `rollover_start_month` or `rollover_starting_balance` will be applied. Those two restart a category's rollover period and discard the balance accumulated in it, which cannot be undone, so they cannot ride along unnoticed in a call that otherwise reads like a rename.
 

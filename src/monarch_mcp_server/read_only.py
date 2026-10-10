@@ -34,7 +34,9 @@ MUTATING_TOOLS: FrozenSet[str] = frozenset(
         "update_transaction_notes",
         "mark_transaction_reviewed",
         "bulk_categorize_transactions",
+        "bulk_update_transactions",
         "split_transaction",
+        "set_business_entity",
         "upload_account_balance_history",
         # Tags
         "set_transaction_tags",

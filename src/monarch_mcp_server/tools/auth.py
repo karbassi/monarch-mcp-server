@@ -1,7 +1,6 @@
 """Authentication tools."""
 
 import logging
-import os
 from typing import Any
 
 try:  # mcp >= 2.0
@@ -95,9 +94,11 @@ async def check_auth_status() -> str:
     try:
         status = _describe_session(secure_session.load_session()) + "\n"
 
-        email = os.getenv("MONARCH_EMAIL")
-        if email:
-            status += f"📧 Environment email: {email}\n"
+        # MONARCH_EMAIL used to be echoed here. Nothing authenticates with it:
+        # it was read in this one place, to print it. Showing it in an auth
+        # status tool implied setting it configured something, which it has not
+        # since tool calls stopped initiating password logins. It also handed
+        # the account email to any caller that reached the HTTP port.
 
         status += (
             "\n💡 Try get_accounts to test connection or run login_setup.py if needed."

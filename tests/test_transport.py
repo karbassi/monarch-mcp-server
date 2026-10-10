@@ -206,3 +206,18 @@ def test_http_allows_configured_remote_host_and_origin():
             },
         )
         assert "serverInfo" in rpc_result(response)
+
+
+def test_trailing_slash_does_not_redirect_to_a_forged_host():
+    """/mcp/ must not 307 to the request's own Host (upstream ee295b6). Under mcp
+    2.x the wrapper has to forward the builder's keyword arguments, or http_app()
+    and run() both fail before serving anything."""
+    with TestClient(app.http_app(), base_url="http://127.0.0.1") as client:
+        response = client.post(
+            "/mcp/",
+            json=INITIALIZE,
+            headers={**HEADERS, "Host": "evil.example.com"},
+            follow_redirects=False,
+        )
+    assert response.status_code != 307
+    assert "location" not in response.headers

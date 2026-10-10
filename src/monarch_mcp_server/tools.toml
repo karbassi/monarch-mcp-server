@@ -57,6 +57,9 @@ get_debt_paydown = true
 get_goals = true
 get_goal_contributions = true
 
+# Business entities
+get_business_entities = true
+
 # Identity
 monarch_whoami = true
 
@@ -87,8 +90,10 @@ update_transaction = false
 update_transaction_notes = false
 categorize_transaction = false
 bulk_categorize_transactions = false
+bulk_update_transactions = false
 mark_transaction_reviewed = false
 split_transaction = false
+set_business_entity = false
 
 # Tags
 create_transaction_tag = false

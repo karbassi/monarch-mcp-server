@@ -1,12 +1,16 @@
 # Keep the uv version aligned with .github/workflows/ci.yml.
 FROM ghcr.io/astral-sh/uv:0.12.10-python3.12-trixie-slim
 
+# Read only by default: the HTTP transport does not authenticate callers, so
+# anything that reaches the port could otherwise call monarch_logout or
+# monarch_login_with_token. Opt out with -e MONARCH_MCP_READ_ONLY=0.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_NO_CACHE=1 \
     UV_PYTHON_DOWNLOADS=0 \
     MONARCH_MCP_TRANSPORT=streamable-http \
     MONARCH_MCP_HOST=0.0.0.0 \
+    MONARCH_MCP_READ_ONLY=1 \
     PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app

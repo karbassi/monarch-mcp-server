@@ -1,7 +1,7 @@
 """Which tools this server is willing to expose.
 
 The server holds credentials to a real personal-finance account and hands them to
-an LLM. 24 of its 49 tools mutate that account -- create and delete transactions,
+an LLM. 30 of its 65 tools mutate that account -- create and delete transactions,
 set budget amounts, rewrite auto-categorisation rules -- with no undo. Gating runs
 at registration time, so a withheld tool is never advertised to the model and
 cannot be invoked even by name.
@@ -107,6 +107,8 @@ READ_TOOLS = frozenset(
         # goals
         "get_goals",
         "get_goal_contributions",
+        # business entities (Common_GetBusinessEntities query)
+        "get_business_entities",
         # identity
         "monarch_whoami",
         # rules
@@ -135,8 +137,12 @@ WRITE_TOOLS = frozenset(
         "update_transaction_notes",
         "categorize_transaction",
         "bulk_categorize_transactions",
+        # Monarch's bulk update endpoint; one call can rewrite many transactions.
+        "bulk_update_transactions",
         "mark_transaction_reviewed",
         "split_transaction",
+        # Common_SetTransactionBusinessEntity mutation
+        "set_business_entity",
         # tags
         "create_transaction_tag",
         "add_transaction_tag",

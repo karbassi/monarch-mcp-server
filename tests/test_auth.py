@@ -291,3 +291,21 @@ class TestElicitNotSupported:
         result = asyncio.run(auth.login_with_token_interactive(ctx))
         assert result == auth._UPGRADE_HINT
         no_session_save.save_token.assert_not_called()
+
+
+class TestCheckAuthStatusDoesNotEchoEnvEmail:
+    """MONARCH_EMAIL authenticates nothing: it was read in one place, to print
+    it. Echoing it implied setting it configured something, and handed the
+    account email to any caller that reached the HTTP port."""
+
+    def test_env_email_is_not_in_the_response(self, monkeypatch):
+        from monarch_mcp_server.tools import auth as tools_auth
+
+        monkeypatch.setenv("MONARCH_EMAIL", "someone@example.invalid")
+        with patch(
+            "monarch_mcp_server.tools.auth.secure_session.load_session",
+            return_value={"token": "t", "auth_mode": "token"},
+        ):
+            result = asyncio.run(tools_auth.check_auth_status())
+        assert "someone@example.invalid" not in result
+        assert "MONARCH_EMAIL" not in result

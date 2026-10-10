@@ -404,3 +404,12 @@ class TestCandidatePrecedence:
 
         assert tool_policy.config_path() == override
         assert tool_policy.load_enabled() == {"get_cashflow"}
+
+
+def test_both_write_gates_name_the_same_tools():
+    """tools.toml's WRITE_TOOLS and MONARCH_MCP_READ_ONLY's MUTATING_TOOLS are
+    independent gates. If they drift, a tool merged from upstream can be a write
+    to one and invisible to the other."""
+    from monarch_mcp_server import read_only
+
+    assert tool_policy.WRITE_TOOLS == read_only.MUTATING_TOOLS

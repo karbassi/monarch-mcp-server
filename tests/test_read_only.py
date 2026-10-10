@@ -247,3 +247,61 @@ class TestPositionalToolName:
 
         fake.tool("delete_transaction")(some_helper)
         assert registered == []
+
+
+class TestDockerDefault:
+    """The container serves HTTP with no authentication, so it must default to
+    read only: otherwise anything reaching the port could call monarch_logout
+    or monarch_login_with_token and replace the stored session (issue #154)."""
+
+    @staticmethod
+    def _dockerfile_env():
+        from pathlib import Path
+
+        dockerfile = Path(__file__).resolve().parent.parent / "Dockerfile"
+        env = {}
+        in_env = False
+        for raw in dockerfile.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if line.startswith("ENV "):
+                in_env, line = True, line[4:]
+            if not in_env:
+                continue
+            continued = line.endswith("\\")
+            for pair in line.rstrip("\\").split():
+                key, _, value = pair.partition("=")
+                env[key] = value.strip('"')
+            in_env = continued
+        return env
+
+    def test_dockerfile_turns_read_only_on(self):
+        env = self._dockerfile_env()
+        assert env.get(read_only.ENV_VAR) == "1"
+
+    def test_session_tools_are_not_exposed_under_the_docker_env(self, tmp_path):
+        """Registration, not just the ENV line: the server started with the
+        image's setting must not list the tools that change the session."""
+        import os
+
+        env = {**os.environ, read_only.ENV_VAR: self._dockerfile_env()[read_only.ENV_VAR]}
+        env["HOME"] = str(tmp_path)
+        # conftest's keyring isolation only covers this process, and importing
+        # the app in the subprocess constructs SecureMonarchSession at module
+        # scope, which probes the keyring. With HOME pointed at an empty temp
+        # dir, macOS finds no login keychain there and prompts the developer to
+        # create or reset one, which also hangs an unattended run. Pin a null
+        # backend so the probe never reaches a real keychain.
+        env["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
+        script = (
+            "import asyncio\n"
+            "from monarch_mcp_server.app import mcp\n"
+            "names = {t.name for t in asyncio.run(mcp.list_tools())}\n"
+            "print(','.join(sorted(names)))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script], env=env, capture_output=True, text=True, check=True
+        )
+        names = set(result.stdout.strip().split(","))
+        assert names, "no tools were listed"
+        assert not names & {"monarch_login", "monarch_login_with_token", "monarch_logout"}
+        assert not names & read_only.MUTATING_TOOLS

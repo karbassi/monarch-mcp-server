@@ -3,7 +3,7 @@
 import argparse
 import logging
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from mcp.server.transport_security import TransportSecuritySettings
@@ -97,6 +97,30 @@ def log_tool_policy() -> None:
             ", ".join(sorted(unclassified)),
         )
 
+# Starlette redirects /mcp/ to /mcp at routing time, before the endpoint and so
+# before the Host check, and it builds the Location header from the request's
+# own Host. A request with Host: evil.example therefore got a 307 to
+# http://evil.example/mcp, and a 307 preserves the method and body, which here
+# means tool arguments. Behind the reverse proxy the README recommends, which
+# passes the public Host through, a client configured with a trailing slash
+# would resend its body to an attacker chosen host.
+#
+# mcp.run() builds the Starlette app internally, so the builder is wrapped
+# rather than the run path, which leaves the transport selection untouched.
+_build_streamable_http_app = mcp.streamable_http_app
+
+
+def _streamable_http_app_without_slash_redirect(
+    *args: Any, **kwargs: Any
+) -> "Starlette":
+    # Forward everything: mcp 2.x passes host, transport_security and the rest
+    # as keywords, both from run() and from http_app() below.
+    http_app = _build_streamable_http_app(*args, **kwargs)
+    http_app.router.redirect_slashes = False
+    return http_app
+
+
+mcp.streamable_http_app = _streamable_http_app_without_slash_redirect  # type: ignore[method-assign]
 
 # Export for `mcp run`
 app = mcp
