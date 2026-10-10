@@ -11,7 +11,14 @@ from monarch_mcp_server import app
 
 @pytest.fixture(autouse=True)
 def isolate_transport(monkeypatch):
-    for suffix in ("TRANSPORT", "HOST", "PORT", "ALLOWED_HOSTS", "ALLOWED_ORIGINS"):
+    for suffix in (
+        "TRANSPORT",
+        "HOST",
+        "PORT",
+        "ALLOWED_HOSTS",
+        "ALLOWED_ORIGINS",
+        "ALLOW_REMOTE_BIND",
+    ):
         monkeypatch.delenv(f"MONARCH_MCP_{suffix}", raising=False)
     # mcp 2.x keeps the streamable-HTTP session manager on the low-level server,
     # not on the MCPServer facade (it was ``app.mcp._session_manager`` under
@@ -30,6 +37,7 @@ def test_default_remains_stdio(isolate_transport):
 def test_environment_configures_http(monkeypatch, isolate_transport):
     monkeypatch.setenv("MONARCH_MCP_TRANSPORT", "streamable-http")
     monkeypatch.setenv("MONARCH_MCP_HOST", "0.0.0.0")
+    monkeypatch.setenv("MONARCH_MCP_ALLOW_REMOTE_BIND", "1")
     monkeypatch.setenv("MONARCH_MCP_PORT", "9000")
     monkeypatch.setenv(
         "MONARCH_MCP_ALLOWED_HOSTS", "mcp.example.com, server.lan:9000, "
@@ -52,6 +60,7 @@ def test_cli_overrides_environment(monkeypatch, isolate_transport):
     monkeypatch.setenv("MONARCH_MCP_PORT", "invalid")
     monkeypatch.setenv("MONARCH_MCP_ALLOWED_HOSTS", "old.example.com")
     monkeypatch.setenv("MONARCH_MCP_ALLOWED_ORIGINS", "https://old.example.com")
+    monkeypatch.setenv("MONARCH_MCP_ALLOW_REMOTE_BIND", "1")
     app.main(
         [
             "--transport",
@@ -93,6 +102,54 @@ def test_invalid_environment_port_fails(monkeypatch, isolate_transport, port):
         app.main([])
     assert exc.value.code == 2
     isolate_transport.assert_not_called()
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.10", "mcp.example.com"])
+def test_non_loopback_bind_is_refused_without_opt_in(
+    monkeypatch, isolate_transport, host
+):
+    monkeypatch.setenv("MONARCH_MCP_TRANSPORT", "streamable-http")
+    monkeypatch.setenv("MONARCH_MCP_HOST", host)
+    with pytest.raises(SystemExit) as exc:
+        app.main([])
+    assert exc.value.code == 2
+    isolate_transport.assert_not_called()
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no"])
+def test_falsy_opt_in_still_refuses_non_loopback(
+    monkeypatch, isolate_transport, value
+):
+    monkeypatch.setenv("MONARCH_MCP_ALLOW_REMOTE_BIND", value)
+    with pytest.raises(SystemExit):
+        app.main(["--transport", "http", "--host", "0.0.0.0"])
+    isolate_transport.assert_not_called()
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
+def test_loopback_bind_needs_no_opt_in(monkeypatch, isolate_transport, host):
+    app.main(["--transport", "http", "--host", host, "--port", "8518"])
+    call = isolate_transport.call_args
+    assert (call.kwargs["host"], call.kwargs["port"]) == (host, 8518)
+
+
+def test_default_http_bind_is_loopback(isolate_transport):
+    app.main(["--transport", "http"])
+    assert isolate_transport.call_args.kwargs["host"] == "127.0.0.1"
+
+
+def test_stdio_ignores_the_bind_guard(monkeypatch, isolate_transport):
+    monkeypatch.setenv("MONARCH_MCP_HOST", "0.0.0.0")
+    app.main([])
+    isolate_transport.assert_called_once_with()
+
+
+def test_dockerfile_opts_in_to_its_remote_bind():
+    from pathlib import Path
+
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+    assert "MONARCH_MCP_HOST=0.0.0.0" in dockerfile
+    assert "MONARCH_MCP_ALLOW_REMOTE_BIND=1" in dockerfile
 
 
 def test_invalid_environment_transport_fails(monkeypatch, isolate_transport):

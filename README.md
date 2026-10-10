@@ -362,8 +362,10 @@ Connect an MCP client using Streamable HTTP to `http://127.0.0.1:8000/mcp`.
 | Listen port                        | `--port`                        | `MONARCH_MCP_PORT`                              | `8000`                                         |
 | Additional allowed Host headers    | `--allowed-host` (repeatable)   | `MONARCH_MCP_ALLOWED_HOSTS` (comma-separated)   | None; loopback hosts are always allowed        |
 | Additional allowed browser Origins | `--allowed-origin` (repeatable) | `MONARCH_MCP_ALLOWED_ORIGINS` (comma-separated) | None; HTTP loopback origins are always allowed |
+| Allow a non-loopback listen address | None                           | `MONARCH_MCP_ALLOW_REMOTE_BIND`                 | Unset; HTTP refuses to bind anything but `127.0.0.1`, `localhost`, or `::1` (the Docker image sets `1`) |
 
 CLI flags override their environment settings.
+The HTTP transport does not authenticate callers, so it refuses to listen on a non-loopback address unless `MONARCH_MCP_ALLOW_REMOTE_BIND=1` is set. Prefer binding `127.0.0.1` behind an authenticating or access-controlled reverse proxy.
 Host entries include the port when clients send one; `server.lan:*` allows any port.
 Origin entries include the scheme, for example `https://client.example.com`.
 Clients without an Origin header are supported.

@@ -142,6 +142,22 @@ def _env_list(name: str) -> list[str]:
     ]
 
 
+#: Bind addresses that only accept connections from this machine.
+LOOPBACK_BIND_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+#: The HTTP transport does not authenticate callers, so a non-loopback bind hands
+#: the Monarch session to anything that can reach the port. Refuse it unless the
+#: operator opts in -- the Docker image does, because inside a container the
+#: server must listen on 0.0.0.0 for a published port to reach it.
+ALLOW_REMOTE_BIND_ENV = "MONARCH_MCP_ALLOW_REMOTE_BIND"
+
+_TRUTHY = frozenset({"1", "true", "t", "yes", "y", "on"})
+
+
+def _remote_bind_allowed() -> bool:
+    return os.environ.get(ALLOW_REMOTE_BIND_ENV, "").strip().lower() in _TRUTHY
+
+
 # Loopback names are always accepted for Host/Origin validation. Listening on all
 # interfaces must not disable that check; remote names are added explicitly.
 _LOCAL_ALLOWED_HOSTS = [
@@ -249,6 +265,17 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("MONARCH_MCP_TRANSPORT must be stdio, streamable-http, or http")
     if not args.host.strip():
         parser.error("HTTP host must not be empty")
+    if (
+        args.transport != "stdio"
+        and args.host.strip() not in LOOPBACK_BIND_HOSTS
+        and not _remote_bind_allowed()
+    ):
+        parser.error(
+            f"refusing to bind HTTP to non-loopback host {args.host!r}: the HTTP "
+            "transport does not authenticate callers. Bind 127.0.0.1 behind an "
+            f"authenticating proxy, or set {ALLOW_REMOTE_BIND_ENV}=1 to accept "
+            "the risk (the Docker image does this)."
+        )
 
     logger.info("Starting Monarch Money MCP Server (%s)...", args.transport)
     log_tool_policy()
