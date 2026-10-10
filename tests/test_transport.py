@@ -278,3 +278,48 @@ def test_trailing_slash_does_not_redirect_to_a_forged_host():
         )
     assert response.status_code != 307
     assert "location" not in response.headers
+
+
+class TestMcp1xHttpPath:
+    """mcp 1.x reads HTTP settings from mcp.settings and its run() and builder
+    take no keywords. pyproject still admits 1.x, so both entry points need a
+    path that does not pass 2.x keywords."""
+
+    def test_main_configures_settings_and_runs_without_keywords(
+        self, monkeypatch, isolate_transport
+    ):
+        from types import SimpleNamespace
+
+        settings = SimpleNamespace(host=None, port=None, transport_security=None)
+        monkeypatch.setattr(app, "_MCP_V2", False)
+        monkeypatch.setattr(app.mcp, "settings", settings)
+        app.main(
+            ["--transport", "http", "--port", "8518", "--allowed-host", "mcp.ali.fyi"]
+        )
+        isolate_transport.assert_called_once_with("streamable-http")
+        assert (settings.host, settings.port) == ("127.0.0.1", 8518)
+        assert "mcp.ali.fyi" in settings.transport_security.allowed_hosts
+
+    def test_http_app_calls_the_builder_without_keywords(self, monkeypatch):
+        from types import SimpleNamespace
+
+        settings = SimpleNamespace(host=None, port=None, transport_security=None)
+        builder = Mock(return_value="app")
+        monkeypatch.setattr(app, "_MCP_V2", False)
+        monkeypatch.setattr(app.mcp, "settings", settings)
+        monkeypatch.setattr(app.mcp, "streamable_http_app", builder)
+        assert app.http_app(allowed_hosts=["mcp.ali.fyi"]) == "app"
+        builder.assert_called_once_with()
+        assert settings.host == "127.0.0.1"
+        assert "mcp.ali.fyi" in settings.transport_security.allowed_hosts
+
+    def test_a_1x_without_transport_security_is_refused(
+        self, monkeypatch, isolate_transport
+    ):
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(app, "_MCP_V2", False)
+        monkeypatch.setattr(app.mcp, "settings", SimpleNamespace(host=None, port=None))
+        with pytest.raises(RuntimeError, match="transport_security"):
+            app.main(["--transport", "http"])
+        isolate_transport.assert_not_called()

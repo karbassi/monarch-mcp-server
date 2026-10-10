@@ -18,10 +18,10 @@ from monarch_mcp_server.client import clear_client_cache
 from monarch_mcp_server.secure_session import secure_session
 
 _UPGRADE_HINT = (
-    "Elicitation requires an MCP Python SDK that exposes Context.elicit. This "
-    "project requires mcp >= 2.1, where it is always present, so reaching this "
-    "message means the running install is older than the declared floor -- "
-    "usually a stale resolved environment rather than a missing feature. "
+    "Elicitation requires an MCP Python SDK that exposes Context.elicit, which "
+    "is always present from mcp 2.1. The project still runs on mcp 1.x, where "
+    "elicitation may be missing; the lock resolves 2.x, so on a locked install "
+    "reaching this message usually means a stale resolved environment. "
     "Upgrade the `mcp` package, then restart your "
     "MCP client. If you launch via `uv run --with mcp[cli]`, run `uv cache "
     "clean mcp` first so a fresh version is resolved. As a fallback, run "

@@ -11,7 +11,11 @@ if TYPE_CHECKING:
 
 try:  # mcp >= 2.0 renamed FastMCP to MCPServer
     from mcp.server.mcpserver import MCPServer
+
+    #: mcp 2.x takes HTTP settings per call; 1.x reads them from mcp.settings.
+    _MCP_V2 = True
 except ImportError:  # mcp < 2.0
+    _MCP_V2 = False
     # mypy type-checks against the installed (2.x) mcp, where these 1.x names
     # are absent; the fallback is only taken at runtime under mcp 1.x.
     from mcp.server.fastmcp import (  # type: ignore[no-redef,attr-defined]
@@ -221,16 +225,37 @@ def _transport_security(
     )
 
 
+def _configure_v1_http(
+    security: "TransportSecuritySettings", host: str, port: int | None = None
+) -> None:
+    """mcp 1.x: HTTP settings live on mcp.settings, and its builder and run()
+    take no keywords. Refuse a 1.x old enough to lack transport_security rather
+    than serve HTTP without Host/Origin validation."""
+    # Typed as Any: mypy checks against the installed 2.x, whose settings have
+    # no host/port, and this path only runs under 1.x.
+    settings: Any = mcp.settings
+    if not hasattr(settings, "transport_security"):
+        raise RuntimeError(
+            "this mcp 1.x release has no transport_security setting, so the HTTP "
+            "transport would run without Host/Origin validation; upgrade mcp"
+        )
+    settings.host = host
+    if port is not None:
+        settings.port = port
+    settings.transport_security = security
+
+
 def http_app(
     host: str = "127.0.0.1",
     allowed_hosts: list[str] | None = None,
     allowed_origins: list[str] | None = None,
 ) -> "Starlette":
     """The streamable-HTTP ASGI app with Host/Origin validation applied."""
-    return mcp.streamable_http_app(
-        host=host,
-        transport_security=_transport_security(allowed_hosts, allowed_origins),
-    )
+    security = _transport_security(allowed_hosts, allowed_origins)
+    if not _MCP_V2:
+        _configure_v1_http(security, host)
+        return mcp.streamable_http_app()
+    return mcp.streamable_http_app(host=host, transport_security=security)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -291,18 +316,23 @@ def main(argv: list[str] | None = None) -> None:
         if args.transport == "stdio":
             mcp.run()
         else:
-            # mcp 2.x configures the HTTP transport per call rather than through
-            # mutable settings. Host/Origin validation is passed alongside the
-            # bind host and port, not assigned onto the server first.
-            mcp.run(
-                "streamable-http",
-                host=args.host,
-                port=args.port,
-                transport_security=_transport_security(
-                    allowed_hosts=args.allowed_host,
-                    allowed_origins=args.allowed_origin,
-                ),
+            security = _transport_security(
+                allowed_hosts=args.allowed_host,
+                allowed_origins=args.allowed_origin,
             )
+            if _MCP_V2:
+                # mcp 2.x configures the HTTP transport per call rather than
+                # through mutable settings. Host/Origin validation is passed
+                # alongside the bind host and port.
+                mcp.run(
+                    "streamable-http",
+                    host=args.host,
+                    port=args.port,
+                    transport_security=security,
+                )
+            else:
+                _configure_v1_http(security, args.host, args.port)
+                mcp.run("streamable-http")
     except Exception as e:
         logger.error(f"Failed to run server: {str(e)}")
         raise
