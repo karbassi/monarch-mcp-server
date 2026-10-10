@@ -1,7 +1,7 @@
 """Transaction rules tools with GraphQL queries."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from gql import gql
 
@@ -12,6 +12,7 @@ from monarch_mcp_server.helpers import (
     json_rejected,
     json_success,
     payload_errors,
+    require_nonblank,
 )
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,8 @@ logger = logging.getLogger(__name__)
 # GraphQL constants
 # ---------------------------------------------------------------------------
 
-GET_TRANSACTION_RULES_QUERY = gql("""
+GET_TRANSACTION_RULES_QUERY = gql(
+    """
 query GetTransactionRules {
   transactionRules {
     id
@@ -152,7 +154,8 @@ query GetTransactionRules {
     __typename
   }
 }
-""")
+"""
+)
 
 
 CREATE_TRANSACTION_RULE_MUTATION = gql("""
@@ -176,9 +179,11 @@ mutation Common_CreateTransactionRuleMutationV2($input: CreateTransactionRuleInp
     __typename
   }
 }
-""")
+"""
+)
 
-UPDATE_TRANSACTION_RULE_MUTATION = gql("""
+UPDATE_TRANSACTION_RULE_MUTATION = gql(
+    """
 mutation Common_UpdateTransactionRuleMutationV2($input: UpdateTransactionRuleInput!) {
   updateTransactionRuleV2(input: $input) {
     transactionRule {
@@ -199,9 +204,11 @@ mutation Common_UpdateTransactionRuleMutationV2($input: UpdateTransactionRuleInp
     __typename
   }
 }
-""")
+"""
+)
 
-DELETE_TRANSACTION_RULE_MUTATION = gql("""
+DELETE_TRANSACTION_RULE_MUTATION = gql(
+    """
 mutation Common_DeleteTransactionRule($id: ID!) {
   deleteTransactionRule(id: $id) {
     deleted
@@ -218,7 +225,8 @@ mutation Common_DeleteTransactionRule($id: ID!) {
     __typename
   }
 }
-""")
+"""
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -322,7 +330,7 @@ def _meaningful_errors(payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, 
     }
 
 
-async def _fetch_rule(client, rule_id: str) -> Optional[Dict[str, Any]]:
+async def _fetch_rule(client: Any, rule_id: str) -> Optional[Dict[str, Any]]:
     """Fetch a single rule by id, or None if it does not exist."""
     result = await client.gql_call(
         operation="GetTransactionRules",
@@ -331,7 +339,7 @@ async def _fetch_rule(client, rule_id: str) -> Optional[Dict[str, Any]]:
     )
     for rule in result.get("transactionRules") or []:
         if rule.get("id") == rule_id:
-            return rule
+            return cast(Dict[str, Any], rule)
     return None
 
 
@@ -367,19 +375,33 @@ async def get_transaction_rules() -> str:
                 "amount_criteria": rule.get("amountCriteria"),
                 "category_ids": rule.get("categoryIds"),
                 "account_ids": rule.get("accountIds"),
-                "use_original_statement": rule.get("merchantCriteriaUseOriginalStatement"),
-                "set_category_action": {
-                    "id": rule.get("setCategoryAction", {}).get("id"),
-                    "name": rule.get("setCategoryAction", {}).get("name"),
-                } if rule.get("setCategoryAction") else None,
-                "set_merchant_action": {
-                    "id": rule.get("setMerchantAction", {}).get("id"),
-                    "name": rule.get("setMerchantAction", {}).get("name"),
-                } if rule.get("setMerchantAction") else None,
-                "add_tags_action": [
-                    {"id": tag.get("id"), "name": tag.get("name")}
-                    for tag in rule.get("addTagsAction", [])
-                ] if rule.get("addTagsAction") else None,
+                "use_original_statement": rule.get(
+                    "merchantCriteriaUseOriginalStatement"
+                ),
+                "set_category_action": (
+                    {
+                        "id": rule.get("setCategoryAction", {}).get("id"),
+                        "name": rule.get("setCategoryAction", {}).get("name"),
+                    }
+                    if rule.get("setCategoryAction")
+                    else None
+                ),
+                "set_merchant_action": (
+                    {
+                        "id": rule.get("setMerchantAction", {}).get("id"),
+                        "name": rule.get("setMerchantAction", {}).get("name"),
+                    }
+                    if rule.get("setMerchantAction")
+                    else None
+                ),
+                "add_tags_action": (
+                    [
+                        {"id": tag.get("id"), "name": tag.get("name")}
+                        for tag in rule.get("addTagsAction", [])
+                    ]
+                    if rule.get("addTagsAction")
+                    else None
+                ),
                 "link_goal_action": rule.get("linkGoalAction"),
                 "hide_from_reports_action": rule.get("setHideFromReportsAction"),
                 "review_status_action": rule.get("reviewStatusAction"),
@@ -470,6 +492,9 @@ async def create_transaction_rule(
         )
     """
     try:
+        if set_merchant_name is not None:
+            require_nonblank(set_merchant_name, "set_merchant_name")
+
         client = await get_monarch_client()
 
         merchant = _build_criteria(
@@ -644,6 +669,9 @@ async def update_transaction_rule(
         JSON describing whether the update was applied.
     """
     try:
+        if set_merchant_name is not None:
+            require_nonblank(set_merchant_name, "set_merchant_name")
+
         client = await get_monarch_client()
 
         existing = await _fetch_rule(client, rule_id)
@@ -736,7 +764,7 @@ async def update_transaction_rule(
         ]
         # setMerchantAction is written as a NAME, not an id. Passing the id
         # creates a second merchant literally named with that id string.
-        merchant = (
+        merchant_action = (
             None if clear_merchant
             else (set_merchant_name
                   or (existing.get("setMerchantAction") or {}).get("name"))
@@ -765,8 +793,8 @@ async def update_transaction_rule(
 
         if category:
             rule_input["setCategoryAction"] = category
-        if merchant:
-            rule_input["setMerchantAction"] = merchant
+        if merchant_action:
+            rule_input["setMerchantAction"] = merchant_action
         if tags:
             rule_input["addTagsAction"] = tags
         if goal:

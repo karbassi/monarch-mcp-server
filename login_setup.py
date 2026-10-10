@@ -44,6 +44,7 @@ def _use_utf8_console() -> None:
 _use_utf8_console()
 
 from monarchmoney import CaptchaRequiredException, RequireMFAException
+
 from monarch_mcp_server.monarch_auth import (
     EmailOtpRequiredException,
     create_monarch_client,
@@ -188,6 +189,7 @@ async def main():
 
     try:
         import monarchmoney
+
         print(
             f"📦 MonarchMoney version: "
             f"{getattr(monarchmoney, '__version__', 'unknown')}"

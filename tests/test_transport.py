@@ -11,13 +11,31 @@ from monarch_mcp_server import app
 
 @pytest.fixture(autouse=True)
 def isolate_transport(monkeypatch):
-    for suffix in ("TRANSPORT", "HOST", "PORT", "ALLOWED_HOSTS", "ALLOWED_ORIGINS"):
+    for suffix in (
+        "TRANSPORT",
+        "HOST",
+        "PORT",
+        "ALLOWED_HOSTS",
+        "ALLOWED_ORIGINS",
+        "ALLOW_REMOTE_BIND",
+    ):
         monkeypatch.delenv(f"MONARCH_MCP_{suffix}", raising=False)
-    monkeypatch.setattr(app.mcp, "settings", app.mcp.settings.model_copy(deep=True))
-    monkeypatch.setattr(app.mcp, "_session_manager", None)
+    # mcp 2.x keeps the streamable-HTTP session manager on the low-level server,
+    # not on the MCPServer facade (it was ``app.mcp._session_manager`` under
+    # mcp 1.x's FastMCP). Reset it there so each test rebuilds a fresh app.
+    # Under mcp 1.x there is no _lowlevel_server and the manager sits on FastMCP.
+    owner = getattr(app.mcp, "_lowlevel_server", app.mcp)
+    monkeypatch.setattr(owner, "_session_manager", None, raising=False)
     run = Mock()
     monkeypatch.setattr(app.mcp, "run", run)
     return run
+
+
+# These assert the mcp 2.x call shape (run() keywords). The 1.x shape, through
+# mcp.settings, is covered by TestMcp1xHttpPath.
+requires_mcp_v2 = pytest.mark.skipif(
+    not app._MCP_V2, reason="asserts the mcp 2.x run() keyword shape"
+)
 
 
 def test_default_remains_stdio(isolate_transport):
@@ -25,29 +43,35 @@ def test_default_remains_stdio(isolate_transport):
     isolate_transport.assert_called_once_with()
 
 
+@requires_mcp_v2
 def test_environment_configures_http(monkeypatch, isolate_transport):
     monkeypatch.setenv("MONARCH_MCP_TRANSPORT", "streamable-http")
     monkeypatch.setenv("MONARCH_MCP_HOST", "0.0.0.0")
+    monkeypatch.setenv("MONARCH_MCP_ALLOW_REMOTE_BIND", "1")
     monkeypatch.setenv("MONARCH_MCP_PORT", "9000")
     monkeypatch.setenv(
         "MONARCH_MCP_ALLOWED_HOSTS", "mcp.example.com, server.lan:9000, "
     )
     monkeypatch.setenv("MONARCH_MCP_ALLOWED_ORIGINS", "https://client.example.com")
     app.main([])
-    isolate_transport.assert_called_once_with(transport="streamable-http")
-    assert (app.mcp.settings.host, app.mcp.settings.port) == ("0.0.0.0", 9000)
-    security = app.mcp.settings.transport_security
+    isolate_transport.assert_called_once()
+    call = isolate_transport.call_args
+    assert call.args == ("streamable-http",)
+    assert (call.kwargs["host"], call.kwargs["port"]) == ("0.0.0.0", 9000)
+    security = call.kwargs["transport_security"]
     assert security.enable_dns_rebinding_protection
     assert "server.lan:9000" in security.allowed_hosts
     assert "https://client.example.com" in security.allowed_origins
 
 
+@requires_mcp_v2
 def test_cli_overrides_environment(monkeypatch, isolate_transport):
     monkeypatch.setenv("MONARCH_MCP_TRANSPORT", "stdio")
     monkeypatch.setenv("MONARCH_MCP_HOST", "127.0.0.1")
     monkeypatch.setenv("MONARCH_MCP_PORT", "invalid")
     monkeypatch.setenv("MONARCH_MCP_ALLOWED_HOSTS", "old.example.com")
     monkeypatch.setenv("MONARCH_MCP_ALLOWED_ORIGINS", "https://old.example.com")
+    monkeypatch.setenv("MONARCH_MCP_ALLOW_REMOTE_BIND", "1")
     app.main(
         [
             "--transport",
@@ -64,9 +88,11 @@ def test_cli_overrides_environment(monkeypatch, isolate_transport):
             "https://client.example.com",
         ]
     )
-    isolate_transport.assert_called_once_with(transport="streamable-http")
-    assert (app.mcp.settings.host, app.mcp.settings.port) == ("0.0.0.0", 9001)
-    security = app.mcp.settings.transport_security
+    isolate_transport.assert_called_once()
+    call = isolate_transport.call_args
+    assert call.args == ("streamable-http",)
+    assert (call.kwargs["host"], call.kwargs["port"]) == ("0.0.0.0", 9001)
+    security = call.kwargs["transport_security"]
     assert "mcp.example.com" in security.allowed_hosts
     assert "server.lan:9001" in security.allowed_hosts
     assert "old.example.com" not in security.allowed_hosts
@@ -87,6 +113,56 @@ def test_invalid_environment_port_fails(monkeypatch, isolate_transport, port):
         app.main([])
     assert exc.value.code == 2
     isolate_transport.assert_not_called()
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.10", "mcp.example.com"])
+def test_non_loopback_bind_is_refused_without_opt_in(
+    monkeypatch, isolate_transport, host
+):
+    monkeypatch.setenv("MONARCH_MCP_TRANSPORT", "streamable-http")
+    monkeypatch.setenv("MONARCH_MCP_HOST", host)
+    with pytest.raises(SystemExit) as exc:
+        app.main([])
+    assert exc.value.code == 2
+    isolate_transport.assert_not_called()
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no"])
+def test_falsy_opt_in_still_refuses_non_loopback(
+    monkeypatch, isolate_transport, value
+):
+    monkeypatch.setenv("MONARCH_MCP_ALLOW_REMOTE_BIND", value)
+    with pytest.raises(SystemExit):
+        app.main(["--transport", "http", "--host", "0.0.0.0"])
+    isolate_transport.assert_not_called()
+
+
+@requires_mcp_v2
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
+def test_loopback_bind_needs_no_opt_in(monkeypatch, isolate_transport, host):
+    app.main(["--transport", "http", "--host", host, "--port", "8518"])
+    call = isolate_transport.call_args
+    assert (call.kwargs["host"], call.kwargs["port"]) == (host, 8518)
+
+
+@requires_mcp_v2
+def test_default_http_bind_is_loopback(isolate_transport):
+    app.main(["--transport", "http"])
+    assert isolate_transport.call_args.kwargs["host"] == "127.0.0.1"
+
+
+def test_stdio_ignores_the_bind_guard(monkeypatch, isolate_transport):
+    monkeypatch.setenv("MONARCH_MCP_HOST", "0.0.0.0")
+    app.main([])
+    isolate_transport.assert_called_once_with()
+
+
+def test_dockerfile_opts_in_to_its_remote_bind():
+    from pathlib import Path
+
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+    assert "MONARCH_MCP_HOST=0.0.0.0" in dockerfile
+    assert "MONARCH_MCP_ALLOW_REMOTE_BIND=1" in dockerfile
 
 
 def test_invalid_environment_transport_fails(monkeypatch, isolate_transport):
@@ -120,9 +196,8 @@ def rpc_result(response):
 
 
 def test_http_initialize_list_and_call_tool(mock_monarch_client):
-    app.main(["--transport", "http", "--host", "0.0.0.0"])
     with TestClient(
-        app.mcp.streamable_http_app(), base_url="http://localhost:8000"
+        app.http_app(host="0.0.0.0"), base_url="http://localhost:8000"
     ) as client:
         response = client.post("/mcp", headers=HEADERS, json=INITIALIZE)
         assert rpc_result(response)["serverInfo"]["name"] == "Monarch Money MCP Server"
@@ -167,35 +242,30 @@ def test_http_initialize_list_and_call_tool(mock_monarch_client):
 @pytest.mark.parametrize(
     "headers,status",
     [
+        # mcp 2.x answers a rejected Host with 421 and a rejected Origin with 403
+        # (mcp 1.x used 400 for the Origin case).
         ({"Host": "evil.example"}, 421),
-        ({"Origin": "https://evil.example"}, 400),
-        ({"Origin": "null"}, 400),
+        ({"Origin": "https://evil.example"}, 403),
+        ({"Origin": "null"}, 403),
         ({"Origin": "http://localhost"}, 200),
         ({"Host": "localhost"}, 200),
     ],
 )
 def test_http_validates_host_and_origin(headers, status):
-    app.main(["--transport", "http", "--host", "0.0.0.0"])
     with TestClient(
-        app.mcp.streamable_http_app(), base_url="http://localhost:8000"
+        app.http_app(host="0.0.0.0"), base_url="http://localhost:8000"
     ) as client:
         response = client.post("/mcp", headers={**HEADERS, **headers}, json=INITIALIZE)
         assert response.status_code == status
 
 
 def test_http_allows_configured_remote_host_and_origin():
-    app.main(
-        [
-            "--transport",
-            "http",
-            "--allowed-host",
-            "mcp.example.com",
-            "--allowed-origin",
-            "https://client.example.com",
-        ]
-    )
     with TestClient(
-        app.mcp.streamable_http_app(), base_url="https://mcp.example.com"
+        app.http_app(
+            allowed_hosts=["mcp.example.com"],
+            allowed_origins=["https://client.example.com"],
+        ),
+        base_url="https://mcp.example.com",
     ) as client:
         response = client.post(
             "/mcp",
@@ -206,3 +276,63 @@ def test_http_allows_configured_remote_host_and_origin():
             },
         )
         assert "serverInfo" in rpc_result(response)
+
+
+def test_trailing_slash_does_not_redirect_to_a_forged_host():
+    """/mcp/ must not 307 to the request's own Host (upstream ee295b6). Under mcp
+    2.x the wrapper has to forward the builder's keyword arguments, or http_app()
+    and run() both fail before serving anything."""
+    with TestClient(app.http_app(), base_url="http://127.0.0.1") as client:
+        response = client.post(
+            "/mcp/",
+            json=INITIALIZE,
+            headers={**HEADERS, "Host": "evil.example.com"},
+            follow_redirects=False,
+        )
+    assert response.status_code != 307
+    assert "location" not in response.headers
+
+
+class TestMcp1xHttpPath:
+    """mcp 1.x reads HTTP settings from mcp.settings and its run() and builder
+    take no keywords. pyproject still admits 1.x, so both entry points need a
+    path that does not pass 2.x keywords."""
+
+    def test_main_configures_settings_and_runs_without_keywords(
+        self, monkeypatch, isolate_transport
+    ):
+        from types import SimpleNamespace
+
+        settings = SimpleNamespace(host=None, port=None, transport_security=None)
+        monkeypatch.setattr(app, "_MCP_V2", False)
+        monkeypatch.setattr(app.mcp, "settings", settings)
+        app.main(
+            ["--transport", "http", "--port", "8518", "--allowed-host", "mcp.ali.fyi"]
+        )
+        isolate_transport.assert_called_once_with("streamable-http")
+        assert (settings.host, settings.port) == ("127.0.0.1", 8518)
+        assert "mcp.ali.fyi" in settings.transport_security.allowed_hosts
+
+    def test_http_app_calls_the_builder_without_keywords(self, monkeypatch):
+        from types import SimpleNamespace
+
+        settings = SimpleNamespace(host=None, port=None, transport_security=None)
+        builder = Mock(return_value="app")
+        monkeypatch.setattr(app, "_MCP_V2", False)
+        monkeypatch.setattr(app.mcp, "settings", settings)
+        monkeypatch.setattr(app.mcp, "streamable_http_app", builder)
+        assert app.http_app(allowed_hosts=["mcp.ali.fyi"]) == "app"
+        builder.assert_called_once_with()
+        assert settings.host == "127.0.0.1"
+        assert "mcp.ali.fyi" in settings.transport_security.allowed_hosts
+
+    def test_a_1x_without_transport_security_is_refused(
+        self, monkeypatch, isolate_transport
+    ):
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(app, "_MCP_V2", False)
+        monkeypatch.setattr(app.mcp, "settings", SimpleNamespace(host=None, port=None))
+        with pytest.raises(RuntimeError, match="transport_security"):
+            app.main(["--transport", "http"])
+        isolate_transport.assert_not_called()

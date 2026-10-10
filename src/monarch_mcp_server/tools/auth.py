@@ -1,12 +1,13 @@
 """Authentication tools."""
 
 import logging
-import os
+from typing import Any
 
 try:  # mcp >= 2.0
     from mcp.server.mcpserver import Context
 except ImportError:  # mcp < 2.0
-    from mcp.server.fastmcp import Context
+    # mypy checks against the installed 2.x mcp, where this 1.x name is absent.
+    from mcp.server.fastmcp import Context  # type: ignore[no-redef,attr-defined]
 
 from monarch_mcp_server import auth
 from monarch_mcp_server.app import mcp
@@ -65,7 +66,7 @@ async def monarch_logout() -> str:
     return await auth.logout()
 
 
-def _describe_session(session: dict | None) -> str:
+def _describe_session(session: dict[str, Any] | None) -> str:
     """Summarize a stored session without leaking credential values.
 
     A cookie-mode session carries no token, so probing for a token alone
@@ -93,9 +94,11 @@ async def check_auth_status() -> str:
     try:
         status = _describe_session(secure_session.load_session()) + "\n"
 
-        email = os.getenv("MONARCH_EMAIL")
-        if email:
-            status += f"📧 Environment email: {email}\n"
+        # MONARCH_EMAIL used to be echoed here. Nothing authenticates with it:
+        # it was read in this one place, to print it. Showing it in an auth
+        # status tool implied setting it configured something, which it has not
+        # since tool calls stopped initiating password logins. It also handed
+        # the account email to any caller that reached the HTTP port.
 
         status += (
             "\n💡 Try get_accounts to test connection or run login_setup.py if needed."

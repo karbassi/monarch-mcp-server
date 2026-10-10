@@ -59,9 +59,7 @@ class TestLoginInteractive:
             )
             result = asyncio.run(auth.login_interactive(ctx))
         assert "Logged in" in result
-        mm.multi_factor_authenticate.assert_awaited_once_with(
-            "a@b.com", "pw", "123456"
-        )
+        mm.multi_factor_authenticate.assert_awaited_once_with("a@b.com", "pw", "123456")
         no_session_save.save_authenticated_session.assert_called_once_with(mm)
 
     def test_user_cancels_initial_form(self, no_session_save):
@@ -182,7 +180,23 @@ class TestDebugSessionLoading:
             result = asyncio.run(tools_auth.debug_session_loading())
         assert "No Monarch session" in result
 
-    def test_token_present_does_not_leak_length(self):
+    def test_session_present_does_not_leak_the_credential(self):
+        from monarch_mcp_server.tools import auth as tools_auth
+
+        secret = "a-secret-token-value"
+        with patch(
+            "monarch_mcp_server.tools.auth.secure_session.load_session",
+            return_value={"token": secret, "auth_mode": "token"},
+        ):
+            result = asyncio.run(tools_auth.debug_session_loading())
+        assert "✅" in result
+        assert "length" not in result.lower()
+        assert secret not in result
+        # Nor any substring long enough to be useful, nor the length itself.
+        assert secret[:8] not in result
+        assert str(len(secret)) not in result
+
+    def test_cookie_session_does_not_leak_cookie_values(self):
         from monarch_mcp_server.tools import auth as tools_auth
 
         with patch(
@@ -256,17 +270,42 @@ class TestCheckAuthStatus:
 
 
 class TestElicitNotSupported:
-    """Older MCP SDKs (<1.10) do not expose Context.elicit."""
+    """A Context without .elicit must produce the upgrade hint, not a crash.
+
+    The hint names the mcp version that provides elicitation (>= 2.1), which is
+    the feature requirement, not the package floor: the project declares a
+    ``mcp[cli]>=1.10.0`` floor for dual 1.x/2.x support, so the two numbers
+    legitimately differ and the hint text is asserted directly rather than
+    reconstructed from the dependency pin.
+    """
 
     def test_login_interactive_returns_upgrade_hint(self, no_session_save):
         ctx = SimpleNamespace()  # no elicit attribute
         result = asyncio.run(auth.login_interactive(ctx))
-        assert "1.10" in result
+        assert result == auth._UPGRADE_HINT
         assert "login_setup.py" in result
         no_session_save.save_authenticated_session.assert_not_called()
 
     def test_login_with_token_returns_upgrade_hint(self, no_session_save):
         ctx = SimpleNamespace()
         result = asyncio.run(auth.login_with_token_interactive(ctx))
-        assert "1.10" in result
+        assert result == auth._UPGRADE_HINT
         no_session_save.save_token.assert_not_called()
+
+
+class TestCheckAuthStatusDoesNotEchoEnvEmail:
+    """MONARCH_EMAIL authenticates nothing: it was read in one place, to print
+    it. Echoing it implied setting it configured something, and handed the
+    account email to any caller that reached the HTTP port."""
+
+    def test_env_email_is_not_in_the_response(self, monkeypatch):
+        from monarch_mcp_server.tools import auth as tools_auth
+
+        monkeypatch.setenv("MONARCH_EMAIL", "someone@example.invalid")
+        with patch(
+            "monarch_mcp_server.tools.auth.secure_session.load_session",
+            return_value={"token": "t", "auth_mode": "token"},
+        ):
+            result = asyncio.run(tools_auth.check_auth_status())
+        assert "someone@example.invalid" not in result
+        assert "MONARCH_EMAIL" not in result

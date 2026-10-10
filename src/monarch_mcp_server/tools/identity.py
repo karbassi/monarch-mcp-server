@@ -85,7 +85,7 @@ def _trial_entitlements(entitlements: List[str]) -> List[str]:
     return [e for e in entitlements if e.endswith("_trial")]
 
 
-async def _probe_capabilities(client) -> Dict[str, Any]:
+async def _probe_capabilities(client: Any) -> Dict[str, Any]:
     """Run each capability probe, treating any failure as 'not available'.
 
     A gated feature is usually absent from the schema entirely rather than

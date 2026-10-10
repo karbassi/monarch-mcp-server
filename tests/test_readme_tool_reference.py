@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 
 from monarch_mcp_server import server as srv
-from monarch_mcp_server.app import mcp
 
 README = Path(__file__).resolve().parent.parent / "README.md"
 ROW = re.compile(
@@ -36,7 +35,12 @@ def _documented():
 
 
 async def _registered():
-    return {t.name for t in await mcp.list_tools()}
+    # The full tool inventory (exposed + withheld), not just mcp.list_tools():
+    # tool_policy withholds the write tools by default, but the README table and
+    # server.py re-exports document every tool regardless of the allowlist.
+    from monarch_mcp_server.app import tool_inventory
+
+    return set(tool_inventory())
 
 
 async def test_every_documented_tool_exists():

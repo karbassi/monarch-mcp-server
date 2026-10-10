@@ -1,7 +1,11 @@
 """Shared test fixtures for Monarch MCP Server tests."""
 
+import contextlib
+import importlib.util
 import json
+import pathlib
 import sys
+from copy import deepcopy
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Mock the monarchmoney module before any monarch_mcp_server imports
@@ -12,6 +16,93 @@ sys.modules.setdefault("monarchmoney", mm_mock)
 sys.modules.setdefault("monarchmoney.monarchmoney", MagicMock())
 
 import pytest
+
+# Shapes below mirror real API responses, reduced to what the wrappers read.
+_INSTITUTIONS_RESPONSE = {
+    "accounts": [
+        {
+            "id": "acc-1",
+            "displayName": "Checking Account",
+            "mask": "4321",
+            "subtype": {"name": "checking", "display": "Checking"},
+            "credential": {"id": "cred-1"},
+            "deletedAt": None,
+        },
+        {
+            "id": "acc-deleted",
+            "displayName": "Old Card",
+            "mask": "9999",
+            "subtype": {"name": "credit_card", "display": "Credit Card"},
+            "credential": {"id": "cred-1"},
+            "deletedAt": "2026-01-01",
+        },
+        {
+            "id": "acc-manual",
+            "displayName": "Cash",
+            "mask": None,
+            "subtype": {"name": "cash", "display": "Cash"},
+            "credential": None,
+            "deletedAt": None,
+        },
+    ],
+    "credentials": [
+        {
+            "id": "cred-1",
+            "institution": {"name": "Test Bank"},
+            "dataProvider": "PLAID",
+            "displayLastUpdatedAt": "2026-08-25",
+            "updateRequired": False,
+            "disconnectedFromDataProviderAt": None,
+        },
+        {
+            "id": "cred-2",
+            "institution": {"name": "Broken Bank"},
+            "dataProvider": "MX",
+            "displayLastUpdatedAt": "2026-06-01",
+            "updateRequired": True,
+            "disconnectedFromDataProviderAt": None,
+        },
+        {
+            "id": "cred-3",
+            "institution": {"name": "Gone Bank"},
+            "dataProvider": "PLAID",
+            "displayLastUpdatedAt": "2026-02-01",
+            "updateRequired": False,
+            "disconnectedFromDataProviderAt": "2026-03-01",
+        },
+    ],
+}
+
+_CREDIT_HISTORY_RESPONSE = {
+    "creditScoreSnapshots": [
+        {"reportedDate": "2026-08-01", "score": 760},
+        {"reportedDate": "2026-06-01", "score": 740},
+        {"reportedDate": "2026-07-01", "score": None},
+    ],
+    "spinwheelUser": {
+        "creditScoreTrackingStatus": "ACTIVE",
+        "onboardingStatus": "COMPLETE",
+        "onboardingErrorMessage": None,
+    },
+}
+
+_RECENT_BALANCES_RESPONSE = {
+    "accounts": [
+        {"id": "acc-1", "recentBalances": [100.0, 110.0, 120.0]},
+        {"id": "acc-2", "recentBalances": []},
+    ]
+}
+
+_DUPLICATES_RESPONSE = [
+    {
+        "date": "2026-08-10",
+        "amount": -42.5,
+        "account_id": "acc-1",
+        "account_name": "Checking Account",
+        "plaidName": "COFFEE SHOP",
+        "transactions": [{"id": "txn-a"}, {"id": "txn-b"}],
+    }
+]
 
 
 @pytest.fixture(autouse=True)
@@ -69,6 +160,10 @@ def mock_monarch_client():
                 "institution": {"name": "Test Bank"},
                 "deactivatedAt": None,
                 "isHidden": False,
+                "subtype": {"name": "roth_ira", "display": "Roth IRA"},
+                "mask": "4321",
+                "hideFromList": True,
+                "includeInNetWorth": False,
             },
             {
                 "id": "acc-2",
@@ -160,8 +255,61 @@ def mock_monarch_client():
                         }
                     ],
                 },
-            ]
+            ],
+            # Present in the real response; get_budgets used to discard all three.
+            "monthlyAmountsForFlexExpense": {
+                "budgetVariability": "flexible",
+                "monthlyAmounts": [
+                    {
+                        "month": "2026-03-01",
+                        "plannedCashFlowAmount": 700.00,
+                        "actualAmount": 505.00,
+                        "remainingAmount": 195.00,
+                        "previousMonthRolloverAmount": 0.00,
+                    }
+                ],
+            },
+            # Each total is a BudgetTotals object, not a scalar -- planned versus
+            # actual is the point of a budget total. Shape taken from the live
+            # response; an earlier version of this fixture modelled them as bare
+            # numbers and the unit tests happily passed against the wrong shape.
+            "totalsByMonth": [
+                {
+                    "month": "2026-03-01",
+                    "totalIncome": {
+                        "plannedAmount": 5000.00,
+                        "actualAmount": 4800.00,
+                        "remainingAmount": 200.00,
+                        "previousMonthRolloverAmount": 0.00,
+                    },
+                    "totalExpenses": {
+                        "plannedAmount": 2200.00,
+                        "actualAmount": 1900.00,
+                        "remainingAmount": 300.00,
+                        "previousMonthRolloverAmount": 0.00,
+                    },
+                    "totalFixedExpenses": {
+                        "plannedAmount": 900.00,
+                        "actualAmount": 880.00,
+                        "remainingAmount": 20.00,
+                        "previousMonthRolloverAmount": 0.00,
+                    },
+                    "totalFlexibleExpenses": {
+                        "plannedAmount": 700.00,
+                        "actualAmount": 505.00,
+                        "remainingAmount": 195.00,
+                        "previousMonthRolloverAmount": 0.00,
+                    },
+                    "totalNonMonthlyExpenses": {
+                        "plannedAmount": 600.00,
+                        "actualAmount": 515.00,
+                        "remainingAmount": 85.00,
+                        "previousMonthRolloverAmount": 0.00,
+                    },
+                }
+            ],
         },
+        "budgetSystem": "fixed_and_flex",
         "categoryGroups": [
             {
                 "id": "grp-1",
@@ -281,6 +429,17 @@ def mock_monarch_client():
 
     client.upload_account_balance_history.return_value = True
 
+    # deepcopy per test: these are module-level literals, so handing the same
+    # object graph to every test lets one test's mutation leak into the next.
+    # The dicts above this point are built inline in the fixture body and are
+    # already fresh each call; only these four needed it.
+    client.get_institutions.return_value = deepcopy(_INSTITUTIONS_RESPONSE)
+    client.get_credit_history.return_value = deepcopy(_CREDIT_HISTORY_RESPONSE)
+    client.get_recent_account_balances.return_value = deepcopy(
+        _RECENT_BALANCES_RESPONSE
+    )
+    client.find_duplicate_transactions.return_value = deepcopy(_DUPLICATES_RESPONSE)
+
     return client
 
 
@@ -320,3 +479,37 @@ def patch_monarch_client(mock_monarch_client):
     finally:
         for p in patchers:
             p.stop()
+
+
+@contextlib.contextmanager
+def load_script(path):
+    """Import a standalone script by path, leaving sys.path as we found it.
+
+    login_setup.py is a script, not a package member, so it has to be loaded
+    this way. Executing it runs `sys.path.insert(0, .../src)` at module scope,
+    and that insert is unconditional -- so loading it once per test grows
+    sys.path without bound and can make unrelated tests order-dependent.
+    """
+    saved = list(sys.path)
+    try:
+        spec = importlib.util.spec_from_file_location(pathlib.Path(path).stem, path)
+        if spec is None or spec.loader is None:
+            # spec_from_file_location returns None for a path it has no loader
+            # for -- an unrecognised extension, say. Reaching through that gives
+            # an opaque "NoneType has no attribute loader" instead of naming the
+            # file that could not be loaded.
+            raise ImportError(f"cannot load {path} as a Python module")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        yield module
+    finally:
+        sys.path[:] = saved
+
+
+LOGIN_SETUP = pathlib.Path(__file__).resolve().parent.parent / "login_setup.py"
+
+
+@pytest.fixture
+def login_setup():
+    with load_script(LOGIN_SETUP) as module:
+        yield module

@@ -9,18 +9,20 @@ from __future__ import annotations
 try:  # mcp >= 2.0
     from mcp.server.mcpserver import Context
 except ImportError:  # mcp < 2.0
-    from mcp.server.fastmcp import Context
+    # mypy checks against the installed 2.x mcp, where this 1.x name is absent.
+    from mcp.server.fastmcp import Context  # type: ignore[no-redef,attr-defined]
 from monarchmoney import MonarchMoney, RequireMFAException
 from pydantic import BaseModel, Field
 
 from monarch_mcp_server.client import clear_client_cache
 from monarch_mcp_server.secure_session import secure_session
 
-
 _UPGRADE_HINT = (
-    "Elicitation requires the MCP Python SDK >= 1.10.0 (added in June 2025). "
-    "Your MCP server install appears to be running an older version that does "
-    "not expose Context.elicit. Upgrade the `mcp` package, then restart your "
+    "Elicitation requires an MCP Python SDK that exposes Context.elicit, which "
+    "is always present from mcp 2.1. The project still runs on mcp 1.x, where "
+    "elicitation may be missing; the lock resolves 2.x, so on a locked install "
+    "reaching this message usually means a stale resolved environment. "
+    "Upgrade the `mcp` package, then restart your "
     "MCP client. If you launch via `uv run --with mcp[cli]`, run `uv cache "
     "clean mcp` first so a fresh version is resolved. As a fallback, run "
     "`python login_setup.py` from the repo to authenticate via terminal."

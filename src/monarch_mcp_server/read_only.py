@@ -13,7 +13,7 @@ setups keep working exactly as before.
 
 import logging
 import os
-from typing import Any, Callable, FrozenSet, TypeVar
+from typing import Any, Callable, FrozenSet, TypeVar, cast
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,9 @@ MUTATING_TOOLS: FrozenSet[str] = frozenset(
         "update_transaction_notes",
         "mark_transaction_reviewed",
         "bulk_categorize_transactions",
+        "bulk_update_transactions",
         "split_transaction",
+        "set_business_entity",
         "upload_account_balance_history",
         # Tags
         "set_transaction_tags",
@@ -101,11 +103,11 @@ def install(mcp: Any) -> None:
             if name in MUTATING_TOOLS:
                 logger.info("Read only mode: not registering %s", name)
                 return fn
-            return register(fn)
+            return cast(F, register(fn))
 
         return decorator
 
-    mcp.tool = guarded_tool  # type: ignore[method-assign]
+    mcp.tool = guarded_tool
     logger.warning(
         "%s is set: %d mutating tools will not be registered",
         ENV_VAR,

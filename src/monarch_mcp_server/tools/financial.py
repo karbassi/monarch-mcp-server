@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 from monarch_mcp_server.app import mcp
 from monarch_mcp_server.client import get_monarch_client
-from monarch_mcp_server.helpers import json_success, json_error
+from monarch_mcp_server.helpers import json_error, json_success
 
 logger = logging.getLogger(__name__)
 
@@ -80,29 +80,31 @@ async def get_net_worth(
 
         snapshots = result.get("aggregateSnapshots", [])
 
-        formatted: Dict[str, Any] = {
-            "snapshot_count": len(snapshots),
-            "snapshots": []
-        }
+        formatted: Dict[str, Any] = {"snapshot_count": len(snapshots), "snapshots": []}
 
         if snapshots:
-            values = [s.get("balance", 0) for s in snapshots if s.get("balance") is not None]
+            values = [
+                s.get("balance", 0) for s in snapshots if s.get("balance") is not None
+            ]
             if values:
                 formatted["current_net_worth"] = values[-1] if values else 0
                 formatted["earliest_net_worth"] = values[0] if values else 0
                 formatted["change"] = values[-1] - values[0] if len(values) > 1 else 0
                 formatted["change_percent"] = (
                     ((values[-1] - values[0]) / values[0] * 100)
-                    if values[0] != 0 and len(values) > 1 else 0
+                    if values[0] != 0 and len(values) > 1
+                    else 0
                 )
                 formatted["highest"] = max(values)
                 formatted["lowest"] = min(values)
 
         for snapshot in snapshots[-365:]:
-            formatted["snapshots"].append({
-                "date": snapshot.get("date"),
-                "net_worth": snapshot.get("balance"),
-            })
+            formatted["snapshots"].append(
+                {
+                    "date": snapshot.get("date"),
+                    "net_worth": snapshot.get("balance"),
+                }
+            )
 
         return json_success(formatted)
     except Exception as e:
@@ -136,10 +138,9 @@ async def get_net_worth_by_account_type(
     """
     try:
         if timeframe not in ("month", "year"):
-            return json_success({
-                "success": False,
-                "error": "timeframe must be 'month' or 'year'"
-            })
+            return json_success(
+                {"success": False, "error": "timeframe must be 'month' or 'year'"}
+            )
 
         client = await get_monarch_client()
         result = await client.get_account_snapshots_by_type(
@@ -154,7 +155,7 @@ async def get_net_worth_by_account_type(
         formatted: Dict[str, Any] = {
             "timeframe": timeframe,
             "start_date": start_date,
-            "account_types": []
+            "account_types": [],
         }
 
         # Group flat rows by accountType, preserving order of first appearance.
@@ -164,14 +165,18 @@ async def get_net_worth_by_account_type(
             if atype is None:
                 continue
             entry = grouped.setdefault(atype, {"type": atype, "snapshots": []})
-            entry["snapshots"].append({
-                "month": row.get("month"),
-                "balance": row.get("balance"),
-            })
+            entry["snapshots"].append(
+                {
+                    "month": row.get("month"),
+                    "balance": row.get("balance"),
+                }
+            )
 
         for type_info in grouped.values():
             if type_info["snapshots"]:
-                type_info["current_balance"] = type_info["snapshots"][-1].get("balance", 0)
+                type_info["current_balance"] = type_info["snapshots"][-1].get(
+                    "balance", 0
+                )
             formatted["account_types"].append(type_info)
 
         total = sum(
@@ -184,3 +189,45 @@ async def get_net_worth_by_account_type(
         return json_success(formatted)
     except Exception as e:
         return json_error("get_net_worth_by_account_type", e)
+
+
+@mcp.tool()
+async def get_credit_history() -> str:
+    """
+    Get credit score history as reported to Monarch.
+
+    Returns:
+        Score snapshots oldest-first, plus the change across the series and the
+        tracking status (which explains an empty series).
+    """
+    try:
+        client = await get_monarch_client()
+        data = await client.get_credit_history()
+
+        snapshots = sorted(
+            (
+                {"date": snap.get("reportedDate"), "score": snap.get("score")}
+                for snap in (data.get("creditScoreSnapshots") or [])
+                if snap.get("score") is not None
+            ),
+            key=lambda s: s["date"] or "",
+        )
+
+        change = None
+        if len(snapshots) >= 2:
+            change = snapshots[-1]["score"] - snapshots[0]["score"]
+
+        spinwheel = data.get("spinwheelUser") or {}
+        return json_success(
+            {
+                "snapshots": snapshots,
+                "latest_score": snapshots[-1]["score"] if snapshots else None,
+                "change_over_series": change,
+                # Explains an empty series rather than leaving the caller guessing.
+                "tracking_status": spinwheel.get("creditScoreTrackingStatus"),
+                "onboarding_status": spinwheel.get("onboardingStatus"),
+                "onboarding_error": spinwheel.get("onboardingErrorMessage"),
+            }
+        )
+    except Exception as e:
+        return json_error("get_credit_history", e)

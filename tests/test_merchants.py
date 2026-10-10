@@ -363,3 +363,66 @@ class TestReviewRecurringStream:
         data = json.loads(result)
         assert data["error"] is True
         assert "Auth needed" in data["message"]
+
+
+class TestUpdateMerchantRejectsBlankName:
+    """A whitespace rename would corrupt the record every transaction points at."""
+
+    @patch("monarch_mcp_server.tools.merchants.get_monarch_client")
+    async def test_a_blank_name_is_refused(self, mock_get_client):
+        mock_client = AsyncMock()
+        mock_get_client.return_value = mock_client
+
+        data = json.loads(await update_merchant(merchant_id="m_1", name="   "))
+        assert data["error"] is True
+        mock_client.gql_call.assert_not_called()
+
+
+class TestUpdateMerchantFrequency:
+    """Monarch refuses "annually" with an opaque error, so it is sent as "yearly"."""
+
+    @staticmethod
+    def _sent_frequency(mock_client):
+        variables = mock_client.gql_call.call_args.kwargs["variables"]
+        return variables["input"]["recurrence"]["frequency"]
+
+    @pytest.mark.parametrize("given", ["annually", "Annually", " ANNUALLY "])
+    @patch("monarch_mcp_server.tools.merchants.get_monarch_client")
+    async def test_annually_is_sent_as_yearly(self, mock_get_client, given):
+        mock_client = AsyncMock()
+        mock_client.gql_call.return_value = {
+            "updateMerchant": {"merchant": {"id": "m_1"}, "errors": None}
+        }
+        mock_get_client.return_value = mock_client
+
+        await update_merchant(merchant_id="m_1", frequency=given)
+
+        assert self._sent_frequency(mock_client) == "yearly"
+
+    @pytest.mark.parametrize(
+        "given", ["weekly", "biweekly", "monthly", "quarterly", "yearly"]
+    )
+    @patch("monarch_mcp_server.tools.merchants.get_monarch_client")
+    async def test_verified_values_pass_through(self, mock_get_client, given):
+        mock_client = AsyncMock()
+        mock_client.gql_call.return_value = {
+            "updateMerchant": {"merchant": {"id": "m_1"}, "errors": None}
+        }
+        mock_get_client.return_value = mock_client
+
+        await update_merchant(merchant_id="m_1", frequency=given)
+
+        assert self._sent_frequency(mock_client) == given
+
+    @patch("monarch_mcp_server.tools.merchants.get_monarch_client")
+    async def test_unverified_values_are_not_blocked(self, mock_get_client):
+        """No allow-list: Monarch may accept values nobody has verified yet."""
+        mock_client = AsyncMock()
+        mock_client.gql_call.return_value = {
+            "updateMerchant": {"merchant": {"id": "m_1"}, "errors": None}
+        }
+        mock_get_client.return_value = mock_client
+
+        await update_merchant(merchant_id="m_1", frequency="twice_a_month")
+
+        assert self._sent_frequency(mock_client) == "twice_a_month"

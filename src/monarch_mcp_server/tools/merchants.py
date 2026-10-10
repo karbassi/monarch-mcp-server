@@ -7,9 +7,16 @@ from gql import gql
 
 from monarch_mcp_server.app import mcp
 from monarch_mcp_server.client import get_monarch_client
-from monarch_mcp_server.helpers import json_error, json_success
+from monarch_mcp_server.helpers import json_error, json_success, require_nonblank
 
 logger = logging.getLogger(__name__)
+
+# Spellings Monarch refuses for a recurrence frequency, mapped to the value it
+# expects. The mutation rejects an unknown frequency with an opaque "Something
+# went wrong while processing" error that never names the field, so a natural
+# spelling like "annually" fails with nothing to go on. Verified against the
+# live API: "annually" is refused, "yearly" is accepted.
+FREQUENCY_ALIASES = {"annually": "yearly"}
 
 # ---------------------------------------------------------------------------
 # GraphQL constants
@@ -189,9 +196,12 @@ async def update_merchant(
         merchant_id: The Monarch merchant ID.
         name: New merchant display name.
         is_recurring: Whether this merchant has a recurring stream.
-        frequency: Recurrence frequency. Known values: "weekly", "biweekly",
-            "twice_a_month", "monthly", "quarterly", "semiannually",
-            "annually".
+        frequency: Recurrence frequency. Values verified against the live
+            API: "weekly", "biweekly", "monthly", "quarterly", "yearly".
+            "annually" is accepted as an alias for "yearly", since Monarch
+            refuses it. Any other value is passed through unchanged and is
+            unverified; Monarch rejects an unknown one with an opaque
+            server error.
         base_date: Anchor date for recurrence in YYYY-MM-DD format.
         amount: Expected recurring amount (negative for expenses, positive
             for income).
@@ -212,6 +222,10 @@ async def update_merchant(
             )
     """
     try:
+        if frequency is not None:
+            frequency = frequency.strip().lower()
+            frequency = FREQUENCY_ALIASES.get(frequency, frequency)
+
         recurrence_fields: Dict[str, Any] = {
             k: v
             for k, v in {
@@ -236,6 +250,7 @@ async def update_merchant(
         merchant_input: Dict[str, Any] = {"merchantId": merchant_id}
 
         if name is not None:
+            require_nonblank(name, "name")
             merchant_input["name"] = name
 
         if recurrence_fields:

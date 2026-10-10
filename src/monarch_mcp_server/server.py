@@ -29,6 +29,8 @@ from monarch_mcp_server.tools.accounts import (  # noqa: F401
     get_account_balance_history,
     upload_account_balance_history,
     update_account,
+    get_institutions,
+    get_recent_account_balances,
 )
 from monarch_mcp_server.tools.transactions import (  # noqa: F401
     get_transactions,
@@ -40,9 +42,11 @@ from monarch_mcp_server.tools.transactions import (  # noqa: F401
     update_transaction_notes,
     mark_transaction_reviewed,
     bulk_categorize_transactions,
+    bulk_update_transactions,
     delete_transaction,
     get_recurring_transactions,
     get_transactions_needing_review,
+    find_duplicate_transactions,
 )
 from monarch_mcp_server.tools.summaries import (  # noqa: F401
     get_transactions_summary,
@@ -81,6 +85,7 @@ from monarch_mcp_server.tools.financial import (  # noqa: F401
     get_cashflow,
     get_net_worth,
     get_net_worth_by_account_type,
+    get_credit_history,
 )
 from monarch_mcp_server.tools.sync_health import (  # noqa: F401
     get_account_sync_health,
@@ -98,6 +103,10 @@ from monarch_mcp_server.tools.merchants import (  # noqa: F401
     get_merchant,
     update_merchant,
     review_recurring_stream,
+)
+from monarch_mcp_server.tools.business import (  # noqa: F401
+    get_business_entities,
+    set_business_entity,
 )
 
 if __name__ == "__main__":
