@@ -1321,6 +1321,19 @@ class TestBulkUpdateTransactions:
             "notes": "tidied",
         }
 
+    @pytest.mark.parametrize("value", ["", "   ", "\t"])
+    async def test_blank_business_entity_id_is_refused(
+        self, mock_monarch_client, value
+    ):
+        """Blank is a missing value; sending it would be a write, not an error."""
+        data = json.loads(
+            await bulk_update_transactions(
+                transaction_ids=["txn_1"], business_entity_id=value
+            )
+        )
+        mock_monarch_client.gql_call.assert_not_called()
+        assert "business_entity_id" in json.dumps(data)
+
     async def test_needs_review_becomes_the_review_status_enum(
         self, mock_monarch_client
     ):

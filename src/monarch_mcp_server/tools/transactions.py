@@ -960,6 +960,9 @@ async def bulk_update_transactions(
         if needs_review is not None:
             updates["reviewStatus"] = "needs_review" if needs_review else "reviewed"
         if business_entity_id is not None:
+            # Same rule as set_business_entity: blank is a missing value, not
+            # an id. "none" is the explicit way to clear the business.
+            require_nonblank(business_entity_id, "business_entity_id")
             # businessEntityId confirmed against the live API (2026-09-24).
             updates["businessEntityId"] = (
                 None if business_entity_id.strip().lower() == "none" else business_entity_id
