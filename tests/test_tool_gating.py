@@ -141,8 +141,7 @@ class TestNoReadToolPerformsAMutation:
         offenders = {}
         for name in sorted(tool_policy.READ_TOOLS):
             fn = _resolve_tool(name)
-            if fn is None:
-                continue  # covered by test_every_registered_tool_is_classified
+            assert fn is not None, f"{name} is classified but not found in any tool module"
             src = inspect.getsource(fn)
             hits = [m for m in self.WRITE_MARKERS if m in src]
             if hits:
@@ -153,32 +152,20 @@ class TestNoReadToolPerformsAMutation:
 
 
 def _tool_modules():
-    from monarch_mcp_server.tools import (
-        accounts,
-        auth,
-        budgets,
-        categories,
-        financial,
-        merchants,
-        rules,
-        splits,
-        summaries,
-        tags,
-        transactions,
-    )
+    """Every module in the tools package, discovered rather than listed.
 
-    return (
-        accounts,
-        auth,
-        budgets,
-        categories,
-        financial,
-        merchants,
-        rules,
-        splits,
-        summaries,
-        tags,
-        transactions,
+    A hand-written list went stale as upstream added modules (business, debt,
+    goals, identity, sync_health), and the write-marker audit then skipped the
+    tools in them without saying so.
+    """
+    import importlib
+    import pkgutil
+
+    import monarch_mcp_server.tools as tools_pkg
+
+    return tuple(
+        importlib.import_module(f"{tools_pkg.__name__}.{info.name}")
+        for info in pkgutil.iter_modules(tools_pkg.__path__)
     )
 
 
