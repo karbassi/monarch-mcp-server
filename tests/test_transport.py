@@ -23,10 +23,19 @@ def isolate_transport(monkeypatch):
     # mcp 2.x keeps the streamable-HTTP session manager on the low-level server,
     # not on the MCPServer facade (it was ``app.mcp._session_manager`` under
     # mcp 1.x's FastMCP). Reset it there so each test rebuilds a fresh app.
-    monkeypatch.setattr(app.mcp._lowlevel_server, "_session_manager", None)
+    # Under mcp 1.x there is no _lowlevel_server and the manager sits on FastMCP.
+    owner = getattr(app.mcp, "_lowlevel_server", app.mcp)
+    monkeypatch.setattr(owner, "_session_manager", None, raising=False)
     run = Mock()
     monkeypatch.setattr(app.mcp, "run", run)
     return run
+
+
+# These assert the mcp 2.x call shape (run() keywords). The 1.x shape, through
+# mcp.settings, is covered by TestMcp1xHttpPath.
+requires_mcp_v2 = pytest.mark.skipif(
+    not app._MCP_V2, reason="asserts the mcp 2.x run() keyword shape"
+)
 
 
 def test_default_remains_stdio(isolate_transport):
@@ -34,6 +43,7 @@ def test_default_remains_stdio(isolate_transport):
     isolate_transport.assert_called_once_with()
 
 
+@requires_mcp_v2
 def test_environment_configures_http(monkeypatch, isolate_transport):
     monkeypatch.setenv("MONARCH_MCP_TRANSPORT", "streamable-http")
     monkeypatch.setenv("MONARCH_MCP_HOST", "0.0.0.0")
@@ -54,6 +64,7 @@ def test_environment_configures_http(monkeypatch, isolate_transport):
     assert "https://client.example.com" in security.allowed_origins
 
 
+@requires_mcp_v2
 def test_cli_overrides_environment(monkeypatch, isolate_transport):
     monkeypatch.setenv("MONARCH_MCP_TRANSPORT", "stdio")
     monkeypatch.setenv("MONARCH_MCP_HOST", "127.0.0.1")
@@ -126,6 +137,7 @@ def test_falsy_opt_in_still_refuses_non_loopback(
     isolate_transport.assert_not_called()
 
 
+@requires_mcp_v2
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
 def test_loopback_bind_needs_no_opt_in(monkeypatch, isolate_transport, host):
     app.main(["--transport", "http", "--host", host, "--port", "8518"])
@@ -133,6 +145,7 @@ def test_loopback_bind_needs_no_opt_in(monkeypatch, isolate_transport, host):
     assert (call.kwargs["host"], call.kwargs["port"]) == (host, 8518)
 
 
+@requires_mcp_v2
 def test_default_http_bind_is_loopback(isolate_transport):
     app.main(["--transport", "http"])
     assert isolate_transport.call_args.kwargs["host"] == "127.0.0.1"
